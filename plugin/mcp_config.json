@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "computer-use-control": {
+      "command": "python",
+      "args": [
+        "__PROXY_PATH__",
+        "--uvx",
+        "__UVX_PATH__",
+        "--",
+        "computer-control-mcp@latest"
+      ],
+      "tools": {
+        "take_screenshot": { "eager": true },
+        "take_screenshot_with_ocr": { "eager": true },
+        "click_screen": { "eager": true },
+        "type_text": { "eager": true },
+        "press_keys": { "eager": true },
+        "execute_actions": { "eager": true },
+        "list_windows": { "eager": true },
+        "activate_window": { "eager": true },
+        "get_screen_size": { "eager": true }
+      }
+    }
+  }
+}
