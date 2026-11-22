@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""macOS AI Computer-Use Guard:
-- Shows floating banner & 4px highlight border ONLY inside the target window
+"""macOS AI Computer-Use Guard (v0.1.1):
+- Shows Codex-style floating banner & 6px blue border ONLY inside the target window
   when the target app is frontmost (hides when user switches away).
+- Excluded from screenshots via NSWindowSharingNone so AI sees clean UI.
 - Uses primary screen height (screens()[0]) for CGWindowBounds -> Cocoa conversion.
-- Listens via CGEventTap:
+- Listens via CGEventTap (full mouse move/drag/click/wheel + keyboard):
   * Allows AI-injected events (kCGEventSourceUnixProcessID > 0).
   * When target app is NOT frontmost: allows user physical input (including
     clicking the target window to focus it).
-  * When target app IS frontmost: pressing Esc aborts AI operation; other
+  * When target app IS frontmost: pressing Esc aborts AI operation; all other
     physical keyboard/mouse events are blocked.
 - Heartbeat watchdog: auto-exits if no heartbeat within --timeout seconds.
 """
@@ -38,8 +39,11 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
 
     current_target = target.strip()
 
+    def _frontmost_app():
+        return AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+
     def is_target_frontmost() -> bool:
-        app = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        app = _frontmost_app()
         if not app:
             return False
         t_lower = current_target.lower()
@@ -53,16 +57,23 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
         options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
         windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
         t_lower = current_target.lower()
+        front_app = _frontmost_app()
+        front_pid = front_app.processIdentifier() if front_app else None
+
         for w in windows:
+            if w.get("kCGWindowLayer", 0) != 0:
+                continue
+            b = w.get("kCGWindowBounds")
+            if not b or b.get("Width", 0) <= 100 or b.get("Height", 0) <= 60:
+                continue
+            if not t_lower:
+                if front_pid is not None and w.get("kCGWindowOwnerPID") == front_pid:
+                    return b
+                continue
             owner = (w.get("kCGWindowOwnerName") or "").lower()
             title = (w.get("kCGWindowName") or "").lower()
-            layer = w.get("kCGWindowLayer", 0)
-            if layer != 0:
-                continue
-            if not t_lower or t_lower in owner or t_lower in title:
-                b = w.get("kCGWindowBounds")
-                if b and b.get("Width", 0) > 100 and b.get("Height", 0) > 60:
-                    return b
+            if t_lower in owner or t_lower in title:
+                return b
         return None
 
     def primary_screen_height() -> float:
@@ -83,29 +94,54 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
         p.setOpaque_(False)
         p.setBackgroundColor_(color)
         p.setIgnoresMouseEvents_(True)
+        try:
+            p.setSharingType_(AppKit.NSWindowSharingNone)
+        except Exception:
+            pass
         return p
 
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
-    banner_w, banner_h = 380.0, 36.0
+    banner_w, banner_h = 460.0, 56.0
     panel = _make_panel(
         banner_w,
         banner_h,
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.07, 0.09, 0.15, 0.92),
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.96),
     )
 
-    def _banner_text(t: str) -> str:
-        return f"🤖 AI 正在操作 [{t or '当前页面'}] · 点击此页按 Esc 退出"
+    inner = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(2, 2, banner_w - 4, banner_h - 4))
+    inner.setWantsLayer_(True)
+    inner.layer().setBackgroundColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.06, 0.09, 0.16, 0.95).CGColor()
+    )
+    panel.contentView().addSubview_(inner)
 
-    label = AppKit.NSTextField.labelWithString_(_banner_text(current_target))
-    label.setTextColor_(AppKit.NSColor.whiteColor())
-    label.setFont_(AppKit.NSFont.boldSystemFontOfSize_(12))
-    label.setFrame_(AppKit.NSMakeRect(12, 8, banner_w - 24, 20))
-    panel.contentView().addSubview_(label)
+    def _title_text(t: str) -> str:
+        if t:
+            return f"🤖 AI 正在操控 [{t}]，请勿移动鼠标或操作键盘"
+        return "🤖 AI 正在操控此窗口，请勿移动鼠标或操作键盘"
 
-    border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.70)
-    border_panels = [_make_panel(10, 4, border_color) for _ in range(4)]
+    lbl_title = AppKit.NSTextField.labelWithString_(_title_text(current_target))
+    lbl_title.setTextColor_(AppKit.NSColor.whiteColor())
+    lbl_title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(12.5))
+    lbl_title.setAlignment_(AppKit.NSTextAlignmentCenter)
+    lbl_title.setFrame_(AppKit.NSMakeRect(10, 27, banner_w - 24, 20))
+    inner.addSubview_(lbl_title)
+
+    lbl_sub = AppKit.NSTextField.labelWithString_(
+        "当前窗口输入已锁定 · 点击此页按 Esc 立即退出 AI 操作"
+    )
+    lbl_sub.setTextColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.99, 0.83, 0.30, 1.0)
+    )
+    lbl_sub.setFont_(AppKit.NSFont.systemFontOfSize_(11))
+    lbl_sub.setAlignment_(AppKit.NSTextAlignmentCenter)
+    lbl_sub.setFrame_(AppKit.NSMakeRect(10, 6, banner_w - 24, 18))
+    inner.addSubview_(lbl_sub)
+
+    border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.80)
+    border_panels = [_make_panel(10, 6, border_color) for _ in range(4)]
 
     def hide_all() -> None:
         panel.orderOut_(None)
@@ -140,7 +176,7 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
                 new_t = str(st.get("target") or "").strip()
                 if new_t != current_target:
                     current_target = new_t
-                    label.setStringValue_(_banner_text(current_target))
+                    lbl_title.setStringValue_(_title_text(current_target))
             except Exception:
                 pass
 
@@ -158,15 +194,13 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
         bw = float(bounds["Width"])
         bh = float(bounds["Height"])
         sh = primary_screen_height()
-        t = 4.0
+        t = 6.0
 
-        # Banner centered at top inside target window
         px = bx + max(0.0, (bw - banner_w) / 2.0)
-        py = sh - by - banner_h - 8.0
+        py = sh - by - banner_h - 10.0
         panel.setFrameOrigin_(AppKit.NSMakePoint(px, py))
         panel.orderFront_(None)
 
-        # 4 border edges (top, bottom, left, right) in Cocoa bottom-left coords
         edge_rects = [
             AppKit.NSMakeRect(bx, sh - by - t, bw, t),
             AppKit.NSMakeRect(bx, sh - (by + bh), bw, t),
@@ -180,16 +214,13 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.2, True, update_banner)
 
     def event_callback(proxy, event_type, event, refcon):
-        # Allow AI-injected events (pid > 0)
         src_pid = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUnixProcessID)
         if src_pid > 0:
             return event
 
-        # If user is not focused on the target app, allow input so user can work or click to focus
         if not is_target_frontmost():
             return event
 
-        # Target app is frontmost: Esc aborts; all other physical inputs are blocked
         if event_type == Quartz.kCGEventKeyDown:
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
             if keycode == 53:  # Esc
@@ -206,10 +237,16 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     mask = (
         Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDragged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDragged)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseDown)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseUp)
+        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseDragged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventScrollWheel)
     )
     tap = Quartz.CGEventTapCreate(
@@ -226,10 +263,12 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
             Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopCommonModes
         )
         Quartz.CGEventTapEnable(tap, True)
+        print("mac_event_tap_installed=True", file=sys.stderr, flush=True)
     else:
         print(
             "Warning: CGEventTapCreate returned None (check Accessibility permission)",
             file=sys.stderr,
+            flush=True,
         )
 
     AppHelper.runEventLoop()

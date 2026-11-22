@@ -2,7 +2,7 @@
   "name": "computer-use",
   "displayName": "Computer Use 桌面控制",
   "description": "跨平台（Windows / macOS / Linux）桌面控制：截图、OCR、鼠标点击拖拽、键盘输入与窗口管理。基于开源 computer-control-mcp。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "repository": "https://github.com/AB498/computer-control-mcp",
   "suggestedPrompts": [
     "截一张屏幕截图，告诉我桌面上有哪些窗口",

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Windows AI Computer-Use Guard:
-- DPI aware topmost click-through banner: 'AI 正在操作桌面 · 按 Esc 退出'
-- 4px semi-transparent blue highlight border around screen edges
+"""Windows AI Computer-Use Guard (v0.1.1):
+- DPI aware Codex-style topmost click-through banner + 6px blue screen border
+- Excluded from screen capture (WDA_EXCLUDEFROMCAPTURE) so AI screenshots stay clean
 - 64-bit safe low-level keyboard & mouse hooks:
-  * Allows injected (AI) events (LLKHF_INJECTED / LLMHF_INJECTED)
-  * Blocks physical mouse & keyboard input
+  * Allows AI-injected events (LLKHF_INJECTED / LLMHF_INJECTED)
+  * Blocks all physical mouse (move/click/wheel) & keyboard input
   * Allows physical Esc -> writes abort.flag and exits cleanly
 - Heartbeat watchdog: auto-exits and unlocks if no heartbeat within --timeout seconds
 """
@@ -14,6 +14,7 @@ import argparse
 import ctypes
 from ctypes import wintypes
 import json
+import sys
 import threading
 import time
 import tkinter as tk
@@ -29,7 +30,6 @@ except Exception:
         pass
 
 user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
 
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
@@ -44,6 +44,8 @@ WS_EX_LAYERED = 0x00080000
 WS_EX_TRANSPARENT = 0x00000020
 WS_EX_TOPMOST = 0x00000008
 WS_EX_TOOLWINDOW = 0x00000080
+
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
 
 LRESULT = ctypes.c_ssize_t
 HHOOK = wintypes.HANDLE
@@ -71,6 +73,18 @@ class MSLLHOOKSTRUCT(ctypes.Structure):
 
 HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 
+user32.GetParent.argtypes = [wintypes.HWND]
+user32.GetParent.restype = wintypes.HWND
+
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
+
+user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+user32.SetWindowLongW.restype = wintypes.LONG
+
+user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+
 user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
 user32.SetWindowsHookExW.restype = HHOOK
 
@@ -81,7 +95,7 @@ user32.UnhookWindowsHookEx.argtypes = [HHOOK]
 user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 
 
-def _make_click_through(win: tk.Misc) -> None:
+def _style_overlay_window(win: tk.Misc) -> None:
     win.update_idletasks()
     hwnd = user32.GetParent(win.winfo_id()) or win.winfo_id()
     ex_style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
@@ -90,15 +104,19 @@ def _make_click_through(win: tk.Misc) -> None:
         GWL_EXSTYLE,
         ex_style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
     )
+    try:
+        user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
+    except Exception:
+        pass
 
 
-def _format_label(target: str) -> str:
+def _format_title(target: str) -> str:
     if target:
-        return f"🤖 AI 正在操作 [{target}] · 按 Esc 退出"
-    return "🤖 AI 正在操作桌面 · 按 Esc 退出"
+        return f"🤖 AI 正在操控 [{target}]，请勿移动鼠标或操作键盘"
+    return "🤖 AI 正在操控您的电脑，请勿移动鼠标或操作键盘"
 
 
-def _create_border_edges(root: tk.Tk, sw: int, sh: int, thickness: int = 4) -> list[tk.Toplevel]:
+def _create_border_edges(root: tk.Tk, sw: int, sh: int, thickness: int = 6) -> list[tk.Toplevel]:
     specs = [
         f"{sw}x{thickness}+0+0",
         f"{sw}x{thickness}+0+{sh - thickness}",
@@ -110,10 +128,10 @@ def _create_border_edges(root: tk.Tk, sw: int, sh: int, thickness: int = 4) -> l
         edge = tk.Toplevel(root)
         edge.overrideredirect(True)
         edge.attributes("-topmost", True)
-        edge.attributes("-alpha", 0.65)
+        edge.attributes("-alpha", 0.80)
         edge.configure(bg="#3B82F6")
         edge.geometry(geom)
-        _make_click_through(edge)
+        _style_overlay_window(edge)
         edges.append(edge)
     return edges
 
@@ -127,34 +145,45 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.92)
-    root.configure(bg="#111827")
+    root.attributes("-alpha", 0.94)
+    root.configure(bg="#3B82F6")
+
+    card = tk.Frame(root, bg="#0F172A", padx=22, pady=10)
+    card.pack(padx=2, pady=2)
 
     current_target = target
-    lbl = tk.Label(
-        root,
-        text=_format_label(current_target),
+    lbl_title = tk.Label(
+        card,
+        text=_format_title(current_target),
         fg="#F9FAFB",
-        bg="#111827",
-        font=("Microsoft YaHei UI", 11, "bold"),
-        padx=18,
-        pady=8,
+        bg="#0F172A",
+        font=("Microsoft YaHei UI", 12, "bold"),
     )
-    lbl.pack()
+    lbl_title.pack()
+
+    lbl_sub = tk.Label(
+        card,
+        text="当前除 Esc 外所有键鼠输入已锁定 · 按 Esc 立即退出 AI 操作",
+        fg="#FCD34D",
+        bg="#0F172A",
+        font=("Microsoft YaHei UI", 10),
+        pady=2,
+    )
+    lbl_sub.pack()
 
     def _position_banner() -> None:
         root.update_idletasks()
         sw_ = root.winfo_screenwidth()
         ww = root.winfo_reqwidth()
         wh = root.winfo_reqheight()
-        root.geometry(f"{ww}x{wh}+{(sw_ - ww) // 2}+16")
+        root.geometry(f"{ww}x{wh}+{(sw_ - ww) // 2}+18")
 
     _position_banner()
-    _make_click_through(root)
+    _style_overlay_window(root)
 
     sw = root.winfo_screenwidth()
     sh = root.winfo_screenheight()
-    edges = _create_border_edges(root, sw, sh, thickness=4)
+    edges = _create_border_edges(root, sw, sh, thickness=6)
 
     def shutdown_ui() -> None:
         for edge in edges:
@@ -197,9 +226,10 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     kb_cb = HOOKPROC(kb_proc)
     ms_cb = HOOKPROC(mouse_proc)
 
-    h_mod = kernel32.GetModuleHandleW(None)
-    kb_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, kb_cb, h_mod, 0)
-    ms_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, ms_cb, h_mod, 0)
+    # Pass None as hMod for low-level global hooks on 64-bit Windows
+    kb_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, kb_cb, None, 0)
+    ms_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, ms_cb, None, 0)
+    print(f"hooks_installed kb={bool(kb_hook)} ms={bool(ms_hook)}", file=sys.stderr, flush=True)
 
     last_hb = time.time()
 
@@ -228,14 +258,14 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
                 new_target = str(st.get("target") or "")
                 if new_target != current_target:
                     current_target = new_target
-                    lbl.config(text=_format_label(current_target))
+                    lbl_title.config(text=_format_title(current_target))
                     _position_banner()
             except Exception:
                 pass
 
-        root.after(500, watchdog_tick)
+        root.after(400, watchdog_tick)
 
-    root.after(500, watchdog_tick)
+    root.after(400, watchdog_tick)
     try:
         root.mainloop()
     finally:

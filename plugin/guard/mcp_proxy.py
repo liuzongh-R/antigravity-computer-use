@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transparent stdio MCP proxy with automatic AI Guard and instant Esc abort."""
+"""Transparent stdio MCP proxy with direct venv backend, in-process Guard & instant Esc abort."""
 from __future__ import annotations
 
 import argparse
@@ -33,9 +33,12 @@ ACTION_TOOLS = {
     "wait_milliseconds",
 }
 
-READONLY_TOOLS = {
+GUARD_TRIGGER_TOOLS = ACTION_TOOLS | {
     "take_screenshot",
     "take_screenshot_with_ocr",
+}
+
+READONLY_TOOLS = {
     "list_windows",
     "get_screen_size",
 }
@@ -50,71 +53,6 @@ def _no_window_kwargs() -> dict:
     if platform.system() == "Windows":
         return {"creationflags": 0x08000000}  # CREATE_NO_WINDOW
     return {}
-
-
-def _is_guard_running() -> bool:
-    if not guard_mod.PID_FILE.exists():
-        return False
-    try:
-        pid = int(guard_mod.PID_FILE.read_text(encoding="utf-8").strip())
-        return guard_mod.is_pid_alive(pid)
-    except Exception:
-        return False
-
-
-def _update_state_target(target: str, timeout: float) -> None:
-    guard_mod.ensure_state_dir()
-    data = {
-        "target": target,
-        "started_at": time.time(),
-        "os": platform.system(),
-        "timeout": timeout,
-    }
-    if guard_mod.STATE_FILE.exists():
-        try:
-            old = json.loads(guard_mod.STATE_FILE.read_text(encoding="utf-8"))
-            if isinstance(old, dict):
-                old["target"] = target
-                old["timeout"] = timeout
-                data = old
-        except Exception:
-            pass
-    guard_mod.STATE_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-
-
-def _call_guard_script(*args: str) -> None:
-    guard_py = HERE / "guard.py"
-    try:
-        subprocess.run(
-            [sys.executable, str(guard_py), *args],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            **_no_window_kwargs(),
-        )
-    except Exception:
-        pass
-
-
-def _ensure_guard_started(target: str, timeout: float, uvx_path: str) -> None:
-    guard_mod.write_heartbeat()
-    if _is_guard_running():
-        _update_state_target(target, timeout)
-        return
-    _call_guard_script(
-        "start",
-        "--target",
-        target,
-        "--timeout",
-        str(timeout),
-        "--uvx",
-        uvx_path,
-    )
-
-
-def _stop_guard() -> None:
-    _call_guard_script("stop")
 
 
 def _send_abort_response(req_id, stdout_lock: threading.Lock) -> None:
@@ -151,7 +89,7 @@ def _forward_stream(src, dst, lock: threading.Lock | None = None) -> None:
         pass
 
 
-def _parse_cli(argv: list[str]) -> tuple[str, float, list[str]]:
+def _parse_cli(argv: list[str]) -> tuple[str, str, float, list[str]]:
     if "--" in argv:
         idx = argv.index("--")
         proxy_argv = argv[:idx]
@@ -161,25 +99,35 @@ def _parse_cli(argv: list[str]) -> tuple[str, float, list[str]]:
         mcp_args = []
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--uvx", required=True)
+    parser.add_argument("--backend", default="")
+    parser.add_argument("--uvx", default="")
     parser.add_argument("--timeout", type=float, default=20.0)
     args, extra = parser.parse_known_args(proxy_argv)
     if not mcp_args:
         mcp_args = extra
-    return args.uvx, args.timeout, mcp_args
+    return args.backend, args.uvx, args.timeout, mcp_args
 
 
 def main() -> int:
-    uvx_path, timeout, mcp_args = _parse_cli(sys.argv[1:])
-    if not mcp_args:
-        mcp_args = ["computer-control-mcp@latest"]
+    backend_path, uvx_path, timeout, mcp_args = _parse_cli(sys.argv[1:])
+
+    if backend_path:
+        backend_cmd = [backend_path, *mcp_args]
+    elif uvx_path:
+        if not mcp_args:
+            mcp_args = ["computer-control-mcp@latest"]
+        backend_cmd = [uvx_path, *mcp_args]
+    else:
+        sys.stderr.write("[mcp_proxy] missing --backend or --uvx\n")
+        sys.stderr.flush()
+        return 2
 
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
 
     proc = subprocess.Popen(
-        [uvx_path, *mcp_args],
+        backend_cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -231,20 +179,29 @@ def main() -> int:
                     except Exception:
                         pass
                     abort_cooldown_until = time.time() + 5.0
-                    _stop_guard()
+                    guard_mod.stop_guard(quiet=True)
                     _send_abort_response(req.get("id"), stdout_lock)
                     forward = False
-                elif tool_name in ACTION_TOOLS and time.time() < abort_cooldown_until:
+                elif tool_name in GUARD_TRIGGER_TOOLS and time.time() < abort_cooldown_until:
                     _send_abort_response(req.get("id"), stdout_lock)
                     forward = False
-                elif tool_name in ACTION_TOOLS:
+                elif tool_name in GUARD_TRIGGER_TOOLS:
                     if tool_name == "activate_window":
                         tp = arguments.get("title_pattern")
                         if tp:
                             current_target = str(tp)
-                    _ensure_guard_started(current_target, timeout, uvx_path)
+                    elif tool_name == "take_screenshot_with_ocr" or tool_name == "take_screenshot":
+                        tp = arguments.get("title_pattern")
+                        if tp:
+                            current_target = str(tp)
+                    guard_mod.start_guard(
+                        target=current_target,
+                        timeout=timeout,
+                        uvx_hint=uvx_path,
+                        quiet=True,
+                    )
                 elif tool_name in READONLY_TOOLS:
-                    if _is_guard_running():
+                    if guard_mod.is_guard_running():
                         guard_mod.write_heartbeat()
 
             if forward:
@@ -273,7 +230,7 @@ def main() -> int:
                     proc.kill()
                 except Exception:
                     pass
-        _stop_guard()
+        guard_mod.stop_guard(quiet=True)
 
     return proc.returncode or 0
 

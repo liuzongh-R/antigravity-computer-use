@@ -1,13 +1,11 @@
 {
   "mcpServers": {
     "computer-use-control": {
-      "command": "python",
+      "command": "__PYTHON_PATH__",
       "args": [
         "__PROXY_PATH__",
-        "--uvx",
-        "__UVX_PATH__",
-        "--",
-        "computer-control-mcp@latest"
+        "--backend",
+        "__BACKEND_PATH__"
       ],
       "tools": {
         "take_screenshot": { "eager": true },

@@ -74,8 +74,17 @@ def is_pid_alive(pid: int) -> bool:
         return False
 
 
+def is_guard_running() -> bool:
+    if not PID_FILE.exists():
+        return False
+    try:
+        pid = int(PID_FILE.read_text(encoding="utf-8").strip())
+        return is_pid_alive(pid)
+    except Exception:
+        return False
+
+
 def _find_uv_binary(uvx_hint: str = "") -> str:
-    """Find `uv` binary, preferring the sibling of `--uvx` if provided."""
     if uvx_hint:
         p = Path(uvx_hint)
         cand = p.parent / ("uv.exe" if platform.system() == "Windows" else "uv")
@@ -105,7 +114,12 @@ def _can_import_mac_deps() -> bool:
         return False
 
 
-def cmd_start(target: str, timeout: float, uvx_hint: str) -> int:
+def start_guard(
+    target: str = "",
+    timeout: float = 20.0,
+    uvx_hint: str = "",
+    quiet: bool = False,
+) -> int:
     ensure_state_dir()
     if ABORT_FILE.exists():
         ABORT_FILE.unlink()
@@ -118,7 +132,8 @@ def cmd_start(target: str, timeout: float, uvx_hint: str) -> int:
         try:
             old_pid = int(PID_FILE.read_text(encoding="utf-8").strip())
             if is_pid_alive(old_pid):
-                print(f"Guard already running (pid={old_pid})")
+                if not quiet:
+                    print(f"Guard already running (pid={old_pid})")
                 return 0
         except Exception:
             pass
@@ -166,7 +181,8 @@ def cmd_start(target: str, timeout: float, uvx_hint: str) -> int:
             else:
                 cmd = [sys.executable, *worker_args]
     else:
-        print(f"Unsupported OS for guard: {system}", file=sys.stderr)
+        if not quiet:
+            print(f"Unsupported OS for guard: {system}", file=sys.stderr)
         return 1
 
     kwargs = {}
@@ -188,25 +204,31 @@ def cmd_start(target: str, timeout: float, uvx_hint: str) -> int:
             **kwargs,
         )
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-    print(f"Guard started (pid={proc.pid}, os={system}, target={target!r}, timeout={timeout})")
+    if not quiet:
+        print(f"Guard started (pid={proc.pid}, os={system}, target={target!r}, timeout={timeout})")
     return 0
 
 
-def cmd_stop() -> int:
+def stop_guard(quiet: bool = False) -> int:
     ensure_state_dir()
     if PID_FILE.exists():
         try:
             pid = int(PID_FILE.read_text(encoding="utf-8").strip())
             if is_pid_alive(pid):
                 if platform.system() == "Windows":
-                    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        capture_output=True,
+                        creationflags=0x08000000,
+                    )
                 else:
                     os.kill(pid, signal.SIGTERM)
         except Exception:
             pass
         PID_FILE.unlink(missing_ok=True)
     STATE_FILE.unlink(missing_ok=True)
-    print("Guard stopped")
+    if not quiet:
+        print("Guard stopped")
     return 0
 
 
@@ -252,9 +274,9 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.action == "start":
-        return cmd_start(args.target, args.timeout, args.uvx)
+        return start_guard(args.target, args.timeout, args.uvx, quiet=False)
     if args.action == "stop":
-        return cmd_stop()
+        return stop_guard(quiet=False)
     if args.action == "status":
         return cmd_status()
     if args.action == "check-abort":
