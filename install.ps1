@@ -1,4 +1,4 @@
-﻿# Computer Use 插件一键安装（Windows, v0.2.0）
+﻿# Computer Use 插件一键安装（Windows, v0.2.3）
 # 用法：右键 -> 使用 PowerShell 运行；或  powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = "Stop"
 $src = Join-Path $PSScriptRoot "plugin"
@@ -75,4 +75,4 @@ $json = $cfg | ConvertTo-Json -Depth 10
 if ($LASTEXITCODE -ne 0) { throw "验证依赖导入失败" }
 
 Write-Host ""
-Write-Host "安装完成（v0.2.0 极速原生版）。请重启 Antigravity，或新开一个对话测试桌面操控。"
+Write-Host "安装完成（v0.2.3 圆角微光极速版）。请重启 Antigravity，或新开一个对话测试桌面操控。"

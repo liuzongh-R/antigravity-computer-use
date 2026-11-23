@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""macOS AI Computer-Use Guard (v0.2.2):
-- Strictly pins to a single window identity (target_pid, target_wid).
-- Never locks global OS, Antigravity, other apps, or even other windows of the
-  same application!
-- Never blocks mouse movement (kCGEventMouseMoved is NOT tapped).
-- Allows clicks outside the bound window bounds, Command+Tab, and Command+~.
-- When the bound window is top-frontmost: displays Codex banner + 6px blue
-  border inside it and blocks clicks/scrolls inside + non-Esc keys.
+"""macOS AI Computer-Use Guard (v0.2.3):
+- Zero drag lag: tracks frontmost PID via NSWorkspaceDidActivateApplicationNotification
+  (zero PyObjC IPC inside CGEventTap callback) and excludes MouseMoved/MouseDragged.
+- Background window visibility: keeps soft ice-blue rounded glow border & frosted
+  glass pill anchored directly above target_wid (NSNormalWindowLevel + NSWindowAbove)
+  so it stays visible even when behind other apps, without covering foreground apps.
+- Strict single-window lock: only intercepts clicks/scrolls inside target_wid and
+  non-Esc keys when target_wid is top-frontmost.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import sys
 import time
 
 AI_MAGIC_TAG = 0x41475943  # 'AGYC'
+GLOW_PAD = 12.0
 
 
 def run_guard(
@@ -42,17 +43,35 @@ def run_guard(
     heartbeat_file = state_dir / "heartbeat.txt"
     state_file = state_dir / "guard_state.json"
 
+    init_front = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
     state = {
         "target": target.strip(),
         "target_pid": target_pid if target_pid > 0 else None,
         "target_wid": target_wid if target_wid > 0 else None,
+        "front_pid": int(init_front.processIdentifier()) if init_front else 0,
         "bounds": None,
+        "last_drawn_bounds": None,
         "is_locked_now": False,
         "logged_key": None,
     }
 
-    def _frontmost_app():
-        return AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+    def _on_app_activate(notif) -> None:
+        try:
+            info = notif.userInfo()
+            if info:
+                activated = info.get(AppKit.NSWorkspaceApplicationKey)
+                if activated:
+                    state["front_pid"] = int(activated.processIdentifier())
+        except Exception:
+            pass
+
+    ws_nc = AppKit.NSWorkspace.sharedWorkspace().notificationCenter()
+    observer = ws_nc.addObserverForName_object_queue_usingBlock_(
+        AppKit.NSWorkspaceDidActivateApplicationNotification,
+        None,
+        None,
+        _on_app_activate,
+    )
 
     def _resolve_target_once(windows) -> None:
         t_lower = state["target"].lower()
@@ -85,11 +104,12 @@ def run_guard(
                 flush=True,
             )
 
-    def refresh_target_window() -> tuple[bool, dict | None]:
+    def refresh_target_window() -> tuple[bool, bool, dict | None]:
+        """Returns (is_visible_on_screen, is_top_frontmost, bounds)."""
         if state["target_pid"] is None and state["target_wid"] is None and not state["target"]:
             state["is_locked_now"] = False
             state["bounds"] = None
-            return False, None
+            return False, False, None
 
         options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
         windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
@@ -104,22 +124,10 @@ def run_guard(
         if t_pid is None and t_wid is None:
             state["is_locked_now"] = False
             state["bounds"] = None
-            return False, None
+            return False, False, None
 
-        front_app = _frontmost_app()
-        if not front_app:
-            state["is_locked_now"] = False
-            state["bounds"] = None
-            return False, None
-
-        front_pid = int(front_app.processIdentifier())
-        if t_pid is not None and front_pid != t_pid:
-            state["is_locked_now"] = False
-            state["bounds"] = None
-            return False, None
-
-        # Find the top-most (first in Z-order) valid window owned by front_pid
-        top_w = None
+        target_win = None
+        top_pid_wid = None
         for w in windows:
             if w.get("kCGWindowLayer", 0) != 0:
                 continue
@@ -127,27 +135,28 @@ def run_guard(
             if not b or b.get("Width", 0) <= 100 or b.get("Height", 0) <= 60:
                 continue
             wpid = int(w.get("kCGWindowOwnerPID") or 0)
-            if wpid == front_pid:
-                top_w = w
+            wwid = int(w.get("kCGWindowNumber") or 0)
+
+            if t_pid is not None and wpid == t_pid and top_pid_wid is None:
+                top_pid_wid = wwid
+
+            if t_wid is not None and wwid == t_wid:
+                target_win = w
+                if state["target_pid"] is None and wpid > 0:
+                    state["target_pid"] = wpid
+                break
+            if t_wid is None and t_pid is not None and wpid == t_pid:
+                target_win = w
+                state["target_wid"] = wwid
+                _log_binding_if_changed()
                 break
 
-        if top_w is None:
+        if target_win is None:
             state["is_locked_now"] = False
             state["bounds"] = None
-            return False, None
+            return False, False, None
 
-        top_wid = int(top_w.get("kCGWindowNumber") or 0)
-        if t_wid is not None and top_wid != t_wid:
-            # User switched to a different window within the same application
-            state["is_locked_now"] = False
-            state["bounds"] = None
-            return False, None
-
-        if state["target_wid"] is None and top_wid > 0:
-            state["target_wid"] = top_wid
-            _log_binding_if_changed()
-
-        b = top_w["kCGWindowBounds"]
+        b = target_win["kCGWindowBounds"]
         bounds = {
             "X": float(b["X"]),
             "Y": float(b["Y"]),
@@ -155,8 +164,13 @@ def run_guard(
             "Height": float(b["Height"]),
         }
         state["bounds"] = bounds
-        state["is_locked_now"] = True
-        return True, bounds
+
+        t_pid = state["target_pid"]
+        t_wid = state["target_wid"]
+        is_front_app = (t_pid is not None and state["front_pid"] == t_pid)
+        is_top_window = is_front_app and (top_pid_wid == t_wid)
+        state["is_locked_now"] = is_top_window
+        return True, is_top_window, bounds
 
     def primary_screen_height() -> float:
         screens = AppKit.NSScreen.screens()
@@ -165,64 +179,116 @@ def run_guard(
         main = AppKit.NSScreen.mainScreen()
         return float(main.frame().size.height) if main else 900.0
 
-    def _make_panel(w: float, h: float, color) -> object:
+    def _make_overlay_panel(w: float, h: float) -> object:
         p = AppKit.NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             AppKit.NSMakeRect(0, 0, w, h),
             AppKit.NSWindowStyleMaskBorderless | AppKit.NSWindowStyleMaskNonactivatingPanel,
             AppKit.NSBackingStoreBuffered,
             False,
         )
-        p.setLevel_(AppKit.NSFloatingWindowLevel)
+        # Normal window level so we can anchor strictly above target_wid without covering other foreground apps
+        p.setLevel_(AppKit.NSNormalWindowLevel)
         p.setOpaque_(False)
-        p.setBackgroundColor_(color)
+        p.setHasShadow_(False)
+        p.setBackgroundColor_(AppKit.NSColor.clearColor())
         p.setIgnoresMouseEvents_(True)
         return p
 
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
-    banner_w, banner_h = 500.0, 58.0
-    panel = _make_panel(
-        banner_w,
-        banner_h,
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.96),
+    # 1. Single-panel rounded glowing ice-blue border (matches macOS 11pt window radius)
+    border_panel = _make_overlay_panel(300.0, 200.0)
+    border_root = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, 300.0, 200.0))
+    border_root.setWantsLayer_(True)
+    border_root.layer().setBackgroundColor_(AppKit.NSColor.clearColor().CGColor())
+    border_root.layer().setMasksToBounds_(False)
+    border_panel.setContentView_(border_root)
+
+    glow_view = AppKit.NSView.alloc().initWithFrame_(
+        AppKit.NSMakeRect(GLOW_PAD, GLOW_PAD, 300.0 - 2 * GLOW_PAD, 200.0 - 2 * GLOW_PAD)
     )
-
-    inner = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(2, 2, banner_w - 4, banner_h - 4))
-    inner.setWantsLayer_(True)
-    inner.layer().setBackgroundColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.06, 0.09, 0.16, 0.95).CGColor()
+    glow_view.setWantsLayer_(True)
+    gl = glow_view.layer()
+    gl.setBackgroundColor_(AppKit.NSColor.clearColor().CGColor())
+    gl.setCornerRadius_(11.0)
+    gl.setBorderWidth_(2.0)
+    gl.setBorderColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.49, 0.83, 0.99, 0.86).CGColor()
     )
-    panel.contentView().addSubview_(inner)
-
-    def _title_text(t: str) -> str:
-        return f"● AI 正在操控 [{t or '目标窗口'}] — 请勿移动鼠标或操作键盘"
-
-    lbl_title = AppKit.NSTextField.labelWithString_(_title_text(state["target"]))
-    lbl_title.setTextColor_(AppKit.NSColor.whiteColor())
-    lbl_title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(13))
-    lbl_title.setAlignment_(AppKit.NSTextAlignmentCenter)
-    lbl_title.setFrame_(AppKit.NSMakeRect(10, 28, banner_w - 24, 20))
-    inner.addSubview_(lbl_title)
-
-    lbl_sub = AppKit.NSTextField.labelWithString_(
-        "仅锁定此目标窗口 · 点击外部可随时切换，点回此页按 Esc 退出"
+    gl.setShadowColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.74, 0.97, 0.95).CGColor()
     )
-    lbl_sub.setTextColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.99, 0.83, 0.30, 1.0)
-    )
-    lbl_sub.setFont_(AppKit.NSFont.systemFontOfSize_(11))
-    lbl_sub.setAlignment_(AppKit.NSTextAlignmentCenter)
-    lbl_sub.setFrame_(AppKit.NSMakeRect(10, 6, banner_w - 24, 18))
-    inner.addSubview_(lbl_sub)
+    gl.setShadowOpacity_(0.85)
+    gl.setShadowRadius_(8.5)
+    gl.setShadowOffset_((0.0, 0.0))
+    gl.setMasksToBounds_(False)
+    border_root.addSubview_(glow_view)
 
-    border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.88)
-    border_panels = [_make_panel(10, 6, border_color) for _ in range(4)]
+    # 2. Frosted glass floating pill banner
+    pill_w, pill_h = 396.0, 34.0
+    pill_panel = _make_overlay_panel(pill_w, pill_h)
+
+    vfx = AppKit.NSVisualEffectView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, pill_w, pill_h))
+    vfx.setMaterial_(AppKit.NSVisualEffectMaterialHUDWindow)
+    vfx.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
+    vfx.setState_(AppKit.NSVisualEffectStateActive)
+    vfx.setWantsLayer_(True)
+    vl = vfx.layer()
+    vl.setCornerRadius_(15.0)
+    vl.setMasksToBounds_(True)
+    vl.setBorderWidth_(1.0)
+    vl.setBorderColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.58, 0.84, 1.0, 0.52).CGColor()
+    )
+    pill_panel.setContentView_(vfx)
+
+    dot_lbl = AppKit.NSTextField.labelWithString_("●")
+    dot_lbl.setTextColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.49, 0.83, 0.99, 1.0)
+    )
+    dot_lbl.setFont_(AppKit.NSFont.boldSystemFontOfSize_(11))
+    dot_lbl.setFrame_(AppKit.NSMakeRect(13, 9, 16, 16))
+    vfx.addSubview_(dot_lbl)
+
+    def _short_title(t: str) -> str:
+        t = (t or "目标窗口").strip()
+        if len(t) > 16:
+            t = t[:15] + "…"
+        return f"AI 正在操控 {t}"
+
+    lbl_title = AppKit.NSTextField.labelWithString_(_short_title(state["target"]))
+    lbl_title.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.98, 1.0, 0.96))
+    lbl_title.setFont_(AppKit.NSFont.systemFontOfSize_weight_(12.0, AppKit.NSFontWeightMedium))
+    lbl_title.setFrame_(AppKit.NSMakeRect(28, 8, 224, 18))
+    vfx.addSubview_(lbl_title)
+
+    badge_view = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(256, 6, 128, 22))
+    badge_view.setWantsLayer_(True)
+    bl = badge_view.layer()
+    bl.setCornerRadius_(9.0)
+    bl.setBackgroundColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.74, 0.97, 0.18).CGColor()
+    )
+    bl.setBorderWidth_(0.8)
+    bl.setBorderColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.49, 0.83, 0.99, 0.42).CGColor()
+    )
+    vfx.addSubview_(badge_view)
+
+    lbl_badge = AppKit.NSTextField.labelWithString_("点此页按 ESC 退出")
+    lbl_badge.setTextColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.73, 0.90, 0.99, 0.96)
+    )
+    lbl_badge.setFont_(AppKit.NSFont.systemFontOfSize_weight_(10.5, AppKit.NSFontWeightMedium))
+    lbl_badge.setAlignment_(AppKit.NSTextAlignmentCenter)
+    lbl_badge.setFrame_(AppKit.NSMakeRect(4, 3, 120, 16))
+    badge_view.addSubview_(lbl_badge)
 
     def hide_all() -> None:
-        panel.orderOut_(None)
-        for bp in border_panels:
-            bp.orderOut_(None)
+        border_panel.orderOut_(None)
+        pill_panel.orderOut_(None)
+        state["last_drawn_bounds"] = None
 
     last_hb = time.time()
 
@@ -278,12 +344,14 @@ def run_guard(
                         state["target_wid"] = new_wid
                         changed = True
                     if changed:
-                        lbl_title.setStringValue_(_title_text(state["target"]))
+                        lbl_title.setStringValue_(_short_title(state["target"]))
+                        state["last_drawn_bounds"] = None
             except Exception:
                 pass
 
-        is_front, bounds = refresh_target_window()
-        if not is_front or not bounds:
+        is_visible, _, bounds = refresh_target_window()
+        t_wid = state["target_wid"]
+        if not is_visible or not bounds or not t_wid:
             hide_all()
             return
 
@@ -291,25 +359,30 @@ def run_guard(
         by = bounds["Y"]
         bw = bounds["Width"]
         bh = bounds["Height"]
-        sh = primary_screen_height()
-        t = 6.0
+        b_key = (bx, by, bw, bh, t_wid)
 
-        px = bx + max(0.0, (bw - banner_w) / 2.0)
-        py = sh - by - banner_h - 10.0
-        panel.setFrameOrigin_(AppKit.NSMakePoint(px, py))
-        panel.orderFront_(None)
+        if b_key != state["last_drawn_bounds"]:
+            sh = primary_screen_height()
+            b_rect = AppKit.NSMakeRect(
+                bx - GLOW_PAD,
+                sh - (by + bh) - GLOW_PAD,
+                bw + 2.0 * GLOW_PAD,
+                bh + 2.0 * GLOW_PAD,
+            )
+            border_panel.setFrame_display_(b_rect, True)
+            border_root.setFrame_(AppKit.NSMakeRect(0, 0, b_rect.size.width, b_rect.size.height))
+            glow_view.setFrame_(AppKit.NSMakeRect(GLOW_PAD, GLOW_PAD, bw, bh))
 
-        edge_rects = [
-            AppKit.NSMakeRect(bx, sh - by - t, bw, t),
-            AppKit.NSMakeRect(bx, sh - (by + bh), bw, t),
-            AppKit.NSMakeRect(bx, sh - (by + bh), t, bh),
-            AppKit.NSMakeRect(bx + bw - t, sh - (by + bh), t, bh),
-        ]
-        for bp, rect in zip(border_panels, edge_rects):
-            bp.setFrame_display_(rect, True)
-            bp.orderFront_(None)
+            px = bx + max(8.0, (bw - pill_w) / 2.0)
+            py = sh - by - pill_h - 10.0
+            pill_panel.setFrameOrigin_(AppKit.NSMakePoint(px, py))
+            state["last_drawn_bounds"] = b_key
 
-    AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.06, True, update_banner)
+        # Keep anchored strictly right above target_wid in Z-order (visible even behind other windows!)
+        border_panel.orderWindow_relativeTo_(AppKit.NSWindowAbove, int(t_wid))
+        pill_panel.orderWindow_relativeTo_(AppKit.NSWindowAbove, int(border_panel.windowNumber()))
+
+    AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.15, True, update_banner)
 
     def _point_inside_target(pt) -> bool:
         b = state["bounds"]
@@ -326,21 +399,15 @@ def run_guard(
         if tag == AI_MAGIC_TAG:
             return event
 
-        # 2. Must have a bound target and be actively locked right now
+        # 2. Pure in-memory check (zero Objective-C IPC -> zero drag lag!)
         t_pid = state["target_pid"]
-        if not t_pid or not state["is_locked_now"]:
+        if not t_pid or not state["is_locked_now"] or state["front_pid"] != t_pid:
             return event
 
-        # 3. Live check frontmost app PID to avoid drift during timer interval
-        front_app = _frontmost_app()
-        if not front_app or int(front_app.processIdentifier()) != t_pid:
-            return event
-
-        # 4. Keyboard events inside bound window
+        # 3. Keyboard events inside active bound window
         if event_type in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
             flags = Quartz.CGEventGetFlags(event)
-            # Allow Command+Tab (48) and Command+~ (50) for switching apps/windows
             if (flags & Quartz.kCGEventFlagMaskCommand) and keycode in (48, 50):
                 return event
             if event_type == Quartz.kCGEventKeyDown and keycode == 53:  # Esc
@@ -354,26 +421,23 @@ def run_guard(
                 return None
             return None
 
-        # 5. Mouse click/drag/scroll: ONLY block inside the bound window rectangle
+        # 4. Mouse click/scroll: ONLY block inside the bound window rectangle
         pt = Quartz.CGEventGetLocation(event)
         if not _point_inside_target(pt):
             return event
 
         return None
 
-    # kCGEventMouseMoved intentionally excluded so cursor movement is never blocked
+    # MouseMoved & MouseDragged are intentionally excluded for silky smooth window dragging
     mask = (
         Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseUp)
-        | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDragged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseUp)
-        | Quartz.CGEventMaskBit(Quartz.kCGEventRightMouseDragged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseUp)
-        | Quartz.CGEventMaskBit(Quartz.kCGEventOtherMouseDragged)
         | Quartz.CGEventMaskBit(Quartz.kCGEventScrollWheel)
     )
     tap = Quartz.CGEventTapCreate(
@@ -398,7 +462,13 @@ def run_guard(
             flush=True,
         )
 
-    AppHelper.runEventLoop()
+    try:
+        AppHelper.runEventLoop()
+    finally:
+        try:
+            ws_nc.removeObserver_(observer)
+        except Exception:
+            pass
 
 
 def main() -> None:

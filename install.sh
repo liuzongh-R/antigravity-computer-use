@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Computer Use 插件一键安装（macOS / Linux, v0.2.2）
+# Computer Use 插件一键安装（macOS / Linux, v0.2.3）
 # 用法：bash install.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -72,5 +72,5 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 echo
-echo "安装完成（v0.2.2 极速单窗口版）。"
+echo "安装完成（v0.2.3 丝滑单窗口微光版）。"
 echo "重要提示：macOS 更新后请按 Command+Q 彻底退出 Antigravity 并重新打开（仅点关闭窗口不会重启后台插件进程）。"
