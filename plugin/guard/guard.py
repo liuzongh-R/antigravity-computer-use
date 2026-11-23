@@ -39,12 +39,20 @@ def write_heartbeat() -> None:
     HEARTBEAT_FILE.write_text(f"{time.time():.6f}", encoding="utf-8")
 
 
-def write_state(target: str, system: str, timeout: float) -> None:
+def write_state(
+    target: str,
+    system: str,
+    timeout: float,
+    target_pid: int | None = None,
+    target_wid: int | None = None,
+) -> None:
     ensure_state_dir()
     STATE_FILE.write_text(
         json.dumps(
             {
                 "target": target,
+                "target_pid": target_pid,
+                "target_wid": target_wid,
                 "started_at": time.time(),
                 "os": system,
                 "timeout": timeout,
@@ -128,6 +136,8 @@ def start_guard(
     timeout: float = 45.0,
     uvx_hint: str = "",
     quiet: bool = False,
+    target_pid: int | None = None,
+    target_wid: int | None = None,
 ) -> int:
     ensure_state_dir()
     ABORT_FILE.unlink(missing_ok=True)
@@ -135,7 +145,7 @@ def start_guard(
 
     system = platform.system()
     write_heartbeat()
-    write_state(target, system, timeout)
+    write_state(target, system, timeout, target_pid=target_pid, target_wid=target_wid)
 
     if PID_FILE.exists():
         try:
@@ -168,6 +178,10 @@ def start_guard(
             str(STATE_DIR),
             "--target",
             target,
+            "--target-pid",
+            str(int(target_pid or 0)),
+            "--target-wid",
+            str(int(target_wid or 0)),
             "--timeout",
             str(timeout),
         ]

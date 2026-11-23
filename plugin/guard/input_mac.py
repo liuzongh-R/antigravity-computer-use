@@ -252,6 +252,7 @@ def list_windows() -> list[dict]:
         if not title:
             continue
         pid = int(w.get("kCGWindowOwnerPID") or 0)
+        wid = int(w.get("kCGWindowNumber") or 0)
         results.append(
             {
                 "title": title,
@@ -262,12 +263,43 @@ def list_windows() -> list[dict]:
                 "height": bh,
                 "is_active": pid == front_pid,
                 "pid": pid,
+                "window_id": wid,
             }
         )
     return results
 
 
-def activate_window(title_pattern: str, use_regex: bool = False) -> str:
+def window_at_point(
+    x: int,
+    y: int,
+    exclude_owners: tuple[str, ...] = ("antigravity",),
+) -> dict | None:
+    excl = tuple(e.lower() for e in exclude_owners)
+    for w in list_windows():
+        owner_l = w.get("owner", "").lower()
+        if any(e in owner_l for e in excl):
+            continue
+        if (
+            w["left"] <= x <= w["left"] + w["width"]
+            and w["top"] <= y <= w["top"] + w["height"]
+        ):
+            return w
+    return None
+
+
+def frontmost_window(exclude_owners: tuple[str, ...] = ("antigravity",)) -> dict | None:
+    excl = tuple(e.lower() for e in exclude_owners)
+    for w in list_windows():
+        if not w.get("is_active"):
+            continue
+        owner_l = w.get("owner", "").lower()
+        if any(e in owner_l for e in excl):
+            return None
+        return w
+    return None
+
+
+def activate_window(title_pattern: str, use_regex: bool = False) -> dict:
     if not title_pattern:
         raise ValueError("title_pattern cannot be empty")
     wins = list_windows()
@@ -296,4 +328,9 @@ def activate_window(title_pattern: str, use_regex: bool = False) -> str:
     app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(matched["pid"])
     if app:
         app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-    return matched["title"]
+    return {
+        "title": matched["title"],
+        "owner": matched.get("owner", ""),
+        "pid": matched["pid"],
+        "window_id": matched["window_id"],
+    }

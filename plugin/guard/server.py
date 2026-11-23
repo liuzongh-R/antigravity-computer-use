@@ -18,7 +18,7 @@ if str(HERE) not in sys.path:
 import guard as guard_mod  # noqa: E402
 
 SERVER_NAME = "antigravity-computer-use"
-SERVER_VERSION = "0.2.1"
+SERVER_VERSION = "0.2.2"
 GUARD_TIMEOUT = 45.0
 
 ABORT_MESSAGE = (
@@ -32,6 +32,8 @@ _pil_image_cls = None
 
 _coord_space: dict[str, int] | None = None
 _current_target: str = ""
+_current_target_pid: int | None = None
+_current_target_wid: int | None = None
 _abort_cooldown_until: float = 0.0
 
 
@@ -91,11 +93,34 @@ def _map_point(x: float | int, y: float | int) -> tuple[int, int]:
     return px, py
 
 
+def _clear_target_binding() -> None:
+    global _current_target, _current_target_pid, _current_target_wid
+    _current_target = ""
+    _current_target_pid = None
+    _current_target_wid = None
+
+
+def _bind_from_window_info(win_info: Any) -> str:
+    global _current_target, _current_target_pid, _current_target_wid
+    if isinstance(win_info, dict):
+        _current_target = str(win_info.get("title") or "")
+        pid = win_info.get("pid")
+        wid = win_info.get("window_id")
+        _current_target_pid = int(pid) if pid else None
+        _current_target_wid = int(wid) if wid else None
+    elif isinstance(win_info, str):
+        _current_target = win_info
+        _current_target_pid = None
+        _current_target_wid = None
+    return _current_target
+
+
 def _check_and_handle_abort() -> bool:
     global _abort_cooldown_until
     if guard_mod.ABORT_FILE.exists():
         guard_mod.ABORT_FILE.unlink(missing_ok=True)
         _abort_cooldown_until = time.time() + 5.0
+        _clear_target_binding()
         guard_mod.stop_guard(quiet=True)
         return True
     if time.time() < _abort_cooldown_until:
@@ -103,11 +128,32 @@ def _check_and_handle_abort() -> bool:
     return False
 
 
-def _ensure_guard_active(target: str = "") -> None:
+def _ensure_guard_active() -> None:
     was_running = guard_mod.is_guard_running()
-    guard_mod.start_guard(target=target, timeout=GUARD_TIMEOUT, quiet=True)
+    guard_mod.start_guard(
+        target=_current_target,
+        timeout=GUARD_TIMEOUT,
+        quiet=True,
+        target_pid=_current_target_pid,
+        target_wid=_current_target_wid,
+    )
     if not was_running:
         time.sleep(0.15)
+
+
+def _ensure_mac_bound_for_point(px: int | None = None, py: int | None = None) -> None:
+    if platform.system() != "Darwin":
+        return
+    if _current_target_wid is not None and _current_target_pid is not None:
+        return
+    inp = _get_input()
+    win = None
+    if px is not None and py is not None:
+        win = inp.window_at_point(px, py)
+    if win is None:
+        win = inp.frontmost_window()
+    if win is not None:
+        _bind_from_window_info(win)
 
 
 # --- Tool implementations ---
@@ -150,7 +196,7 @@ def tool_take_screenshot(max_width: int = 1024, quality: int = 75) -> list[dict[
         {
             "type": "text",
             "text": (
-                f"Screenshot {pil_img.width}x{pil_img.height} JPEG "
+                f"Screenshot v0.2.2 {pil_img.width}x{pil_img.height} JPEG "
                 f"(desktop={mw}x{mh}, origin=({ml},{mt})). "
                 "Pass image pixel coordinates directly to mouse tools."
             ),
@@ -184,12 +230,10 @@ def tool_list_windows() -> list[dict[str, Any]]:
 
 
 def tool_activate_window(title_pattern: str, use_regex: bool = False) -> list[dict[str, Any]]:
-    global _current_target
     matched = _get_input().activate_window(title_pattern, use_regex=use_regex)
-    _current_target = matched
-    if guard_mod.is_guard_running():
-        guard_mod.write_state(_current_target, platform.system(), GUARD_TIMEOUT)
-    return [{"type": "text", "text": f"Activated window: {matched}"}]
+    title = _bind_from_window_info(matched)
+    _ensure_guard_active()
+    return [{"type": "text", "text": f"Activated window: {title}"}]
 
 
 def tool_click_screen(x: int, y: int, button: str = "left", clicks: int = 1) -> list[dict[str, Any]]:
@@ -254,35 +298,51 @@ def tool_execute_actions(
 
         if kind in ("click", "click_screen"):
             px, py = _map_point(act["x"], act["y"])
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
             inp.click(px, py, button=str(act.get("button", "left")), clicks=int(act.get("clicks", 1)))
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind == "double_click":
             px, py = _map_point(act["x"], act["y"])
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
             inp.click(px, py, button=str(act.get("button", "left")), clicks=2)
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind == "right_click":
             px, py = _map_point(act["x"], act["y"])
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
             inp.click(px, py, button="right", clicks=1)
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind in ("move", "move_mouse"):
             px, py = _map_point(act["x"], act["y"])
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
             inp.move_mouse(px, py)
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind in ("drag", "drag_mouse"):
             px1, py1 = _map_point(act["from_x"], act["from_y"])
             px2, py2 = _map_point(act["to_x"], act["to_y"])
+            _ensure_mac_bound_for_point(px1, py1)
+            _ensure_guard_active()
             inp.drag(px1, py1, px2, py2, duration=float(act.get("duration", 0.25)), button=str(act.get("button", "left")))
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind == "scroll":
             cx = act.get("x")
             cy = act.get("y")
             px, py = _map_point(cx, cy) if (cx is not None and cy is not None) else (None, None)
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
             inp.scroll(clicks=int(act.get("clicks", 0)), x=px, y=py)
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind in ("type", "type_text", "write"):
+            _ensure_mac_bound_for_point()
+            _ensure_guard_active()
             inp.type_text(str(act.get("text", "")))
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind in ("press", "press_keys", "hotkey"):
+            _ensure_mac_bound_for_point()
+            _ensure_guard_active()
             inp.press_keys(act.get("keys", act.get("key")))
             results.append({"index": idx, "action": kind, "ok": True})
         elif kind in ("wait", "sleep", "wait_milliseconds"):
@@ -297,19 +357,21 @@ def tool_execute_actions(
         elif kind == "activate_window":
             tp = str(act.get("title_pattern", act.get("title", "")))
             matched = inp.activate_window(tp, use_regex=bool(act.get("use_regex", False)))
-            _current_target = matched
-            guard_mod.write_state(_current_target, platform.system(), GUARD_TIMEOUT)
-            results.append({"index": idx, "action": kind, "ok": True, "window": matched})
+            title = _bind_from_window_info(matched)
+            _ensure_guard_active()
+            results.append({"index": idx, "action": kind, "ok": True, "window": title})
         else:
             raise ValueError(f"Unknown action type: {kind!r}")
 
     if release_after:
+        _clear_target_binding()
         guard_mod.stop_guard(quiet=True)
 
     return [{"type": "text", "text": json.dumps({"success": True, "released": release_after, "results": results}, ensure_ascii=False)}], False
 
 
 def tool_release_control() -> list[dict[str, Any]]:
+    _clear_target_binding()
     guard_mod.stop_guard(quiet=True)
     return [{"type": "text", "text": "Released AI Guard lock and closed overlay."}]
 
@@ -477,16 +539,35 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> tuple[list[dict[str, Any]
     if name in GUARDED_TOOLS:
         if _check_and_handle_abort():
             return [{"type": "text", "text": ABORT_MESSAGE}], True
-        if name == "activate_window" and args.get("title_pattern"):
-            _current_target = str(args["title_pattern"])
-        elif name == "execute_actions":
+        if name == "take_screenshot":
+            if platform.system() != "Darwin" or _current_target_wid is not None or _current_target != "":
+                _ensure_guard_active()
+        elif name in ("click_screen", "move_mouse"):
+            px, py = _map_point(args["x"], args["y"])
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
+        elif name == "drag_mouse":
+            px, py = _map_point(args["from_x"], args["from_y"])
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
+        elif name == "scroll":
+            if args.get("x") is not None and args.get("y") is not None:
+                px, py = _map_point(args["x"], args["y"])
+            else:
+                px, py = None, None
+            _ensure_mac_bound_for_point(px, py)
+            _ensure_guard_active()
+        elif name in ("type_text", "press_keys"):
+            _ensure_mac_bound_for_point()
+            _ensure_guard_active()
+        elif name == "execute_actions" and platform.system() != "Darwin":
             for act in args.get("actions") or []:
                 if isinstance(act, dict) and str(act.get("type") or act.get("action") or "").strip().lower() == "activate_window":
                     tp = act.get("title_pattern") or act.get("title")
                     if tp:
-                        _current_target = str(tp)
+                        _bind_from_window_info(str(tp))
                         break
-        _ensure_guard_active(_current_target)
+            _ensure_guard_active()
 
     try:
         if name == "take_screenshot":

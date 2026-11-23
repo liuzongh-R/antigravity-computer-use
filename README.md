@@ -1,19 +1,19 @@
 # Antigravity Computer Use
 
-适用于 **Antigravity** 的极速跨平台桌面控制插件（Windows / macOS · `v0.2.1`）。内置自研单进程 MCP 服务器（仅需 `mss` 与 `pillow` 两个基础依赖）、1024px JPEG 内存截屏与自动坐标映射、批量执行自动解锁（`execute_actions(..., release_after=true)`），以及 **Codex 风格 AI 守卫**（顶部醒目提示卡片、蓝色细边框、兼容远控软件的魔数签名拦截、按 `Esc` 立即终止与 `release_control` 秒解）。
+适用于 **Antigravity** 的极速跨平台桌面控制插件（Windows / macOS · `v0.2.2`）。内置自研单进程 MCP 服务器（仅需 `mss` 与 `pillow` 两个基础依赖）、1024px JPEG 内存截屏与自动坐标映射、批量执行自动解锁（`execute_actions(..., release_after=true)`），以及 **Codex 风格 AI 守卫**（顶部醒目提示卡片、蓝色细边框、兼容远控软件的魔数签名拦截、按 `Esc` 立即终止与 `release_control` 秒解）。
 
 ---
 
-## v0.2.1 核心特性
+## v0.2.2 核心特性
 
 | 能力维度 | Windows 版 | macOS 版 |
 | :--- | :--- | :--- |
 | **启动与运行速度** | 自研纯标准库单进程 MCP 服务，仅依赖 `mss` + `pillow`，冷启动 `< 0.1s`；支持 `execute_actions` + `release_after` 单轮完成多步并秒解 | 同左（外加 `pyobjc`），零外部代理与 ONNX 模型加载拖累 |
 | **截屏与坐标映射** | 内存直出 1024px 缩放 JPEG 图像（更快传图识图），截图像素坐标自动精准映射虚拟桌面，免算 DPI 缩放 | 同左，自动适配 Retina 屏幕逻辑坐标，截图像素直接点击 |
 | **文字输入** | 原生 Unicode `SendInput`，中英文直接输入，完全无视系统输入法 | 原生 `CGEventKeyboardSetUnicodeString`，中英文直接输入 |
-| **Codex 风格操作提示** | 顶部居中双行提示卡片 + 四边 6px 蓝色高亮边框（**本机与 GameViewer 等远控均清晰可见**） | **仅在指定目标窗口位于前台时，在该窗口内部**显示双行提示卡片与 6px 蓝色细边框；切走自动隐藏 |
-| **精准输入锁定** | 独立纯 Win32 `GetMessageW` 钩子线程，**仅放行带专属魔数 `0x41475943` 的 AI 事件**，物理及远控键鼠全部禁止 | **真正只锁定单个目标窗口**：绝不锁鼠标移动，允许随时点击目标窗口外部（Dock/其他应用）与 `Command+Tab` 切走；仅目标窗口内部点击/滚轮与按键被锁定（空 `target` 不锁全局） |
-| **按 `Esc` 退出与解锁** | 全局按 `Esc` 毫秒级卸载钩子并中止 AI；`execute_actions` 设 `release_after=true` 或调用 `release_control` 秒解 | 仅在**点击并激活目标窗口**后按 `Esc` 才终止 AI；在其他软件中完全正常使用 |
+| **Codex 风格操作提示** | 顶部居中双行提示卡片 + 四边 6px 蓝色高亮边框（**本机与 GameViewer 等远控均清晰可见**） | **仅在已绑定的单个目标窗口位于前台时，在该窗口内部**显示双行提示卡片与 6px 蓝色细边框；切到其他应用或同应用其它窗口自动隐藏 |
+| **精准输入锁定** | 独立纯 Win32 `GetMessageW` 钩子线程，**仅放行带专属魔数 `0x41475943` 的 AI 事件**，物理及远控键鼠全部禁止 | **基于唯一窗口 ID `(pid, window_id)` 严格单窗口锁定**：不随前台切换漂移、不锁同应用其它窗口、不锁鼠标移动；允许窗口外点击、`Command+Tab` 与 `Command+~`；刚截屏时未绑定任何目标不锁定 |
+| **按 `Esc` 退出与解锁** | 全局按 `Esc` 毫秒级卸载钩子并中止 AI；`execute_actions` 设 `release_after=true` 或调用 `release_control` 秒解 | 仅在**点击并激活已绑定的目标窗口**后按 `Esc` 才终止 AI；在其他软件中完全正常使用 |
 
 ---
 

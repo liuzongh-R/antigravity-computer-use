@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Computer Use 插件一键安装（macOS / Linux, v0.2.0）
+# Computer Use 插件一键安装（macOS / Linux, v0.2.2）
 # 用法：bash install.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$SCRIPT_DIR/plugin"
 DEST="$HOME/.gemini/config/plugins/computer-use"
+
+# 清理残留旧守卫进程
+if [ -f "$DEST/guard/guard.py" ]; then
+  python3 "$DEST/guard/guard.py" stop >/dev/null 2>&1 || true
+fi
 
 echo "[1/4] 检查 Python 与 uv ..."
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -67,4 +72,5 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 echo
-echo "安装完成（v0.2.0 极速原生版）。请重启 Antigravity，或新开一个对话测试桌面操控。"
+echo "安装完成（v0.2.2 极速单窗口版）。"
+echo "重要提示：macOS 更新后请按 Command+Q 彻底退出 Antigravity 并重新打开（仅点关闭窗口不会重启后台插件进程）。"
