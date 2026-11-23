@@ -225,9 +225,15 @@ def run_guard(
     gl.setMasksToBounds_(False)
     border_root.addSubview_(glow_view)
 
-    # 2. Frosted glass floating pill banner
-    pill_w, pill_h = 396.0, 34.0
+    # 2. High-contrast dark frosted glass floating pill banner (legible on light & dark backgrounds)
+    pill_w, pill_h = 432.0, 38.0
     pill_panel = _make_overlay_panel(pill_w, pill_h)
+    try:
+        dark_app = AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameVibrantDark)
+        if dark_app is not None:
+            pill_panel.setAppearance_(dark_app)
+    except Exception:
+        pass
 
     vfx = AppKit.NSVisualEffectView.alloc().initWithFrame_(AppKit.NSMakeRect(0, 0, pill_w, pill_h))
     vfx.setMaterial_(AppKit.NSVisualEffectMaterialHUDWindow)
@@ -235,54 +241,57 @@ def run_guard(
     vfx.setState_(AppKit.NSVisualEffectStateActive)
     vfx.setWantsLayer_(True)
     vl = vfx.layer()
-    vl.setCornerRadius_(15.0)
+    vl.setCornerRadius_(17.0)
     vl.setMasksToBounds_(True)
-    vl.setBorderWidth_(1.0)
+    vl.setBackgroundColor_(
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.05, 0.08, 0.15, 0.86).CGColor()
+    )
+    vl.setBorderWidth_(1.2)
     vl.setBorderColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.58, 0.84, 1.0, 0.52).CGColor()
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.55, 0.85, 1.0, 0.72).CGColor()
     )
     pill_panel.setContentView_(vfx)
 
     dot_lbl = AppKit.NSTextField.labelWithString_("●")
     dot_lbl.setTextColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.49, 0.83, 0.99, 1.0)
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.49, 0.85, 1.0, 1.0)
     )
-    dot_lbl.setFont_(AppKit.NSFont.boldSystemFontOfSize_(11))
-    dot_lbl.setFrame_(AppKit.NSMakeRect(13, 9, 16, 16))
+    dot_lbl.setFont_(AppKit.NSFont.boldSystemFontOfSize_(12))
+    dot_lbl.setFrame_(AppKit.NSMakeRect(14, 11, 16, 16))
     vfx.addSubview_(dot_lbl)
 
     def _short_title(t: str) -> str:
         t = (t or "目标窗口").strip()
-        if len(t) > 16:
-            t = t[:15] + "…"
+        if len(t) > 15:
+            t = t[:14] + "…"
         return f"AI 正在操控 {t}"
 
     lbl_title = AppKit.NSTextField.labelWithString_(_short_title(state["target"]))
-    lbl_title.setTextColor_(AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.95, 0.98, 1.0, 0.96))
-    lbl_title.setFont_(AppKit.NSFont.systemFontOfSize_weight_(12.0, AppKit.NSFontWeightMedium))
-    lbl_title.setFrame_(AppKit.NSMakeRect(28, 8, 224, 18))
+    lbl_title.setTextColor_(AppKit.NSColor.whiteColor())
+    lbl_title.setFont_(AppKit.NSFont.systemFontOfSize_weight_(13.0, AppKit.NSFontWeightSemibold))
+    lbl_title.setFrame_(AppKit.NSMakeRect(30, 9, 240, 20))
     vfx.addSubview_(lbl_title)
 
-    badge_view = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(256, 6, 128, 22))
+    badge_view = AppKit.NSView.alloc().initWithFrame_(AppKit.NSMakeRect(276, 7, 142, 24))
     badge_view.setWantsLayer_(True)
     bl = badge_view.layer()
-    bl.setCornerRadius_(9.0)
+    bl.setCornerRadius_(10.0)
     bl.setBackgroundColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.74, 0.97, 0.18).CGColor()
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.74, 0.97, 0.30).CGColor()
     )
-    bl.setBorderWidth_(0.8)
+    bl.setBorderWidth_(1.0)
     bl.setBorderColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.49, 0.83, 0.99, 0.42).CGColor()
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.58, 0.86, 1.0, 0.65).CGColor()
     )
     vfx.addSubview_(badge_view)
 
     lbl_badge = AppKit.NSTextField.labelWithString_("点此页按 ESC 退出")
     lbl_badge.setTextColor_(
-        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.73, 0.90, 0.99, 0.96)
+        AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.90, 0.96, 1.0, 1.0)
     )
-    lbl_badge.setFont_(AppKit.NSFont.systemFontOfSize_weight_(10.5, AppKit.NSFontWeightMedium))
+    lbl_badge.setFont_(AppKit.NSFont.systemFontOfSize_weight_(11.5, AppKit.NSFontWeightSemibold))
     lbl_badge.setAlignment_(AppKit.NSTextAlignmentCenter)
-    lbl_badge.setFrame_(AppKit.NSMakeRect(4, 3, 120, 16))
+    lbl_badge.setFrame_(AppKit.NSMakeRect(4, 3, 134, 18))
     badge_view.addSubview_(lbl_badge)
 
     def hide_all() -> None:

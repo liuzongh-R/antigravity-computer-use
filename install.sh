@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Computer Use 插件一键安装（macOS / Linux, v0.2.3）
+# Computer Use 插件一键安装（macOS / Linux, v0.2.4）
 # 用法：bash install.sh
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

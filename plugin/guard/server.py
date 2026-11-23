@@ -18,7 +18,7 @@ if str(HERE) not in sys.path:
 import guard as guard_mod  # noqa: E402
 
 SERVER_NAME = "antigravity-computer-use"
-SERVER_VERSION = "0.2.3"
+SERVER_VERSION = "0.2.4"
 GUARD_TIMEOUT = 45.0
 
 ABORT_MESSAGE = (
@@ -196,7 +196,7 @@ def tool_take_screenshot(max_width: int = 1024, quality: int = 75) -> list[dict[
         {
             "type": "text",
             "text": (
-                f"Screenshot v0.2.3 {pil_img.width}x{pil_img.height} JPEG "
+                f"Screenshot v0.2.4 {pil_img.width}x{pil_img.height} JPEG "
                 f"(desktop={mw}x{mh}, origin=({ml},{mt})). "
                 "Pass image pixel coordinates directly to mouse tools."
             ),

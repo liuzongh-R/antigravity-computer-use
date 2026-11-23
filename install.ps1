@@ -1,4 +1,4 @@
-﻿# Computer Use 插件一键安装（Windows, v0.2.3）
+﻿# Computer Use 插件一键安装（Windows, v0.2.4）
 # 用法：右键 -> 使用 PowerShell 运行；或  powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = "Stop"
 $src = Join-Path $PSScriptRoot "plugin"

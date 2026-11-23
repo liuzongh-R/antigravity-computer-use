@@ -258,11 +258,11 @@ def _render_border_image(sw: int, sh: int) -> Image.Image:
 
 
 def _render_pill_image(target: str, scale: float) -> Image.Image:
-    """Render frosted-glass style rounded floating pill with ice-blue glow."""
+    """Render high-contrast frosted-glass style rounded floating pill with ice-blue glow."""
     pad = int(round(14 * scale))
-    pill_h = int(round(42 * scale))
-    font_main = _load_font(int(round(14 * scale)), bold=True)
-    font_badge = _load_font(int(round(12 * scale)), bold=True)
+    pill_h = int(round(46 * scale))
+    font_main = _load_font(int(round(16 * scale)), bold=True)
+    font_badge = _load_font(int(round(13.5 * scale)), bold=True)
 
     t_short = (target or "").strip()
     if len(t_short) > 18:
@@ -282,10 +282,10 @@ def _render_pill_image(target: str, scale: float) -> Image.Image:
     badge_tw = bb[2] - bb[0]
     badge_th = bb[3] - bb[1]
 
-    dot_r = int(round(4.5 * scale))
-    badge_pad_x = int(round(11 * scale))
+    dot_r = int(round(5.0 * scale))
+    badge_pad_x = int(round(12 * scale))
     badge_w = badge_tw + badge_pad_x * 2
-    badge_h = int(round(24 * scale))
+    badge_h = int(round(28 * scale))
 
     gap1 = int(round(18 * scale))
     gap2 = int(round(12 * scale))
@@ -296,60 +296,55 @@ def _render_pill_image(target: str, scale: float) -> Image.Image:
     total_h = pill_h + pad * 2
     radius = pill_h // 2
 
-    # Outer ice-blue soft glow shadow
     canvas = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
     glow = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
     dg = ImageDraw.Draw(glow)
     dg.rounded_rectangle(
         [pad, pad, pad + pill_w, pad + pill_h],
         radius=radius,
-        fill=(15, 23, 42, 95),
-        outline=(56, 189, 248, 165),
+        fill=(10, 15, 28, 120),
+        outline=(56, 189, 248, 185),
         width=max(2, int(round(2.5 * scale))),
     )
     glow = glow.filter(ImageFilter.GaussianBlur(radius=max(3.0, 5.0 * scale)))
     canvas = Image.alpha_composite(canvas, glow)
 
-    # Crisp dark translucent pill body + thin ice-blue rim
     d = ImageDraw.Draw(canvas)
     d.rounded_rectangle(
         [pad, pad, pad + pill_w, pad + pill_h],
         radius=radius,
-        fill=(15, 23, 42, 222),
-        outline=(147, 215, 255, 165),
-        width=max(1, int(round(1.2 * scale))),
+        fill=(11, 17, 30, 238),
+        outline=(147, 215, 255, 195),
+        width=max(1, int(round(1.5 * scale))),
     )
 
-    # Glowing ice-blue status dot
     dot_cx = pad + gap1 + dot_r
     dot_cy = pad + pill_h // 2
     d.ellipse(
         [dot_cx - dot_r - 2, dot_cy - dot_r - 2, dot_cx + dot_r + 2, dot_cy + dot_r + 2],
-        fill=(56, 189, 248, 90),
+        fill=(56, 189, 248, 110),
     )
     d.ellipse(
         [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
         fill=(125, 211, 252, 255),
     )
 
-    # Main text
     tx = dot_cx + dot_r + gap2
     ty = pad + (pill_h - main_h) // 2 - mb[1]
-    d.text((tx, ty), main_text, font=font_main, fill=(241, 245, 249, 250))
+    d.text((tx, ty), main_text, font=font_main, fill=(255, 255, 255, 255))
 
-    # Right ESC badge
     bx = tx + main_w + gap3
     by = pad + (pill_h - badge_h) // 2
     d.rounded_rectangle(
         [bx, by, bx + badge_w, by + badge_h],
         radius=badge_h // 2,
-        fill=(56, 189, 248, 48),
-        outline=(125, 211, 252, 130),
+        fill=(56, 189, 248, 76),
+        outline=(147, 215, 255, 175),
         width=1,
     )
     btx = bx + (badge_w - badge_tw) // 2 - bb[0]
     bty = by + (badge_h - badge_th) // 2 - bb[1]
-    d.text((btx, bty), badge_text, font=font_badge, fill=(186, 230, 253, 250))
+    d.text((btx, bty), badge_text, font=font_badge, fill=(224, 242, 254, 255))
 
     return canvas
 
