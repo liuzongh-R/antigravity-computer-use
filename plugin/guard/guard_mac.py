@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""macOS AI Computer-Use Guard (v0.2.0):
-- Shows Codex-style floating banner & 6px blue border ONLY inside the target window
-  when the target app is frontmost (hides when user switches away).
-- Visible to both local screen & remote desktop viewers (no NSWindowSharingNone).
-- Uses primary screen height (screens()[0]) for CGWindowBounds -> Cocoa conversion.
-- Listens via CGEventTap:
-  * Allows ONLY events signed with AI_MAGIC_TAG (kCGEventSourceUserData == 0x41475943).
-  * When target app is NOT frontmost: allows user physical input (including
-    clicking the target window to focus it).
-  * When target app IS frontmost: pressing Esc aborts AI operation; all other
-    physical keyboard/mouse events are blocked.
-- 0.15s watchdog checks abort.flag, stop.flag, dynamic target & heartbeat timeout.
+"""macOS AI Computer-Use Guard (v0.2.1):
+- True single-window lock ONLY:
+  * Never blocks mouse movement (kCGEventMouseMoved is NOT tapped).
+  * Does nothing when target is empty (never locks global OS or Antigravity).
+  * Shows banner & 6px blue border ONLY inside the target window when frontmost.
+  * Allows clicks outside target window bounds (Dock, menu bar, other apps)
+    and allows Command+Tab so the user can freely switch away anytime.
+  * When target window IS frontmost, clicks/scrolls inside it and non-Esc keys
+    are blocked; pressing Esc aborts AI operation immediately.
 """
 from __future__ import annotations
 
@@ -40,44 +37,84 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     heartbeat_file = state_dir / "heartbeat.txt"
     state_file = state_dir / "guard_state.json"
 
-    current_target = target.strip()
+    state = {
+        "target": target.strip(),
+        "target_pid": None,
+        "bounds": None,
+        "frontmost": False,
+    }
 
     def _frontmost_app():
         return AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
 
-    def is_target_frontmost() -> bool:
-        app = _frontmost_app()
-        if not app:
-            return False
-        t_lower = current_target.lower()
+    def _matches_target(owner: str, title: str, bundle: str, t_lower: str) -> bool:
         if not t_lower:
-            return True
-        name = (app.localizedName() or "").lower()
-        bundle = (app.bundleIdentifier() or "").lower()
-        return t_lower in name or t_lower in bundle
+            return False
+        return (t_lower in owner) or (t_lower in title) or (t_lower in bundle)
 
-    def get_target_window_bounds():
+    def refresh_target_window() -> tuple[bool, dict | None]:
+        t_lower = state["target"].lower()
+        if not t_lower:
+            state["target_pid"] = None
+            state["bounds"] = None
+            state["frontmost"] = False
+            return False, None
+
+        front_app = _frontmost_app()
+        if not front_app:
+            state["frontmost"] = False
+            state["bounds"] = None
+            return False, None
+
+        front_pid = int(front_app.processIdentifier())
+        front_name = (front_app.localizedName() or "").lower()
+        front_bundle = (front_app.bundleIdentifier() or "").lower()
+
         options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
         windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
-        t_lower = current_target.lower()
-        front_app = _frontmost_app()
-        front_pid = front_app.processIdentifier() if front_app else None
 
+        matched_front_bounds = None
         for w in windows:
             if w.get("kCGWindowLayer", 0) != 0:
                 continue
             b = w.get("kCGWindowBounds")
             if not b or b.get("Width", 0) <= 100 or b.get("Height", 0) <= 60:
                 continue
-            if not t_lower:
-                if front_pid is not None and w.get("kCGWindowOwnerPID") == front_pid:
-                    return b
+            wpid = int(w.get("kCGWindowOwnerPID") or 0)
+            if wpid != front_pid:
                 continue
             owner = (w.get("kCGWindowOwnerName") or "").lower()
             title = (w.get("kCGWindowName") or "").lower()
-            if t_lower in owner or t_lower in title:
-                return b
-        return None
+            if (
+                _matches_target(owner, title, front_bundle, t_lower)
+                or (t_lower in front_name)
+            ):
+                matched_front_bounds = {
+                    "X": float(b["X"]),
+                    "Y": float(b["Y"]),
+                    "Width": float(b["Width"]),
+                    "Height": float(b["Height"]),
+                }
+                state["target_pid"] = front_pid
+                break
+
+        is_front = matched_front_bounds is not None
+        state["frontmost"] = is_front
+        state["bounds"] = matched_front_bounds
+        return is_front, matched_front_bounds
+
+    def is_target_frontmost_fast() -> bool:
+        if not state["target"]:
+            return False
+        front_app = _frontmost_app()
+        if not front_app:
+            return False
+        if state["target_pid"] is not None:
+            return int(front_app.processIdentifier()) == state["target_pid"]
+        t_lower = state["target"].lower()
+        name = (front_app.localizedName() or "").lower()
+        bundle = (front_app.bundleIdentifier() or "").lower()
+        return t_lower in name or t_lower in bundle
 
     def primary_screen_height() -> float:
         screens = AppKit.NSScreen.screens()
@@ -117,11 +154,9 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     panel.contentView().addSubview_(inner)
 
     def _title_text(t: str) -> str:
-        if t:
-            return f"● AI 正在操控 [{t}] — 请勿移动鼠标或操作键盘"
-        return "● AI 正在操控此窗口 — 请勿移动鼠标或操作键盘"
+        return f"● AI 正在操控 [{t}] — 请勿移动鼠标或操作键盘"
 
-    lbl_title = AppKit.NSTextField.labelWithString_(_title_text(current_target))
+    lbl_title = AppKit.NSTextField.labelWithString_(_title_text(state["target"] or "目标窗口"))
     lbl_title.setTextColor_(AppKit.NSColor.whiteColor())
     lbl_title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(13))
     lbl_title.setAlignment_(AppKit.NSTextAlignmentCenter)
@@ -129,7 +164,7 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     inner.addSubview_(lbl_title)
 
     lbl_sub = AppKit.NSTextField.labelWithString_(
-        "当前窗口输入已禁止 · 点击此页按 Esc 立即退出 AI 操作"
+        "仅锁定当前窗口内操作 · 点击外部可随时切换，点回此页按 Esc 退出"
     )
     lbl_sub.setTextColor_(
         AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.99, 0.83, 0.30, 1.0)
@@ -150,7 +185,7 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     last_hb = time.time()
 
     def update_banner(_timer) -> None:
-        nonlocal last_hb, current_target
+        nonlocal last_hb
         if abort_file.exists() or stop_file.exists():
             hide_all()
             AppHelper.stopEventLoop()
@@ -173,25 +208,23 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
             try:
                 st = json.loads(state_file.read_text(encoding="utf-8"))
                 new_t = str(st.get("target") or "").strip()
-                if new_t != current_target:
-                    current_target = new_t
-                    lbl_title.setStringValue_(_title_text(current_target))
+                if new_t != state["target"]:
+                    state["target"] = new_t
+                    state["target_pid"] = None
+                    if new_t:
+                        lbl_title.setStringValue_(_title_text(new_t))
             except Exception:
                 pass
 
-        if not is_target_frontmost():
+        is_front, bounds = refresh_target_window()
+        if not is_front or not bounds:
             hide_all()
             return
 
-        bounds = get_target_window_bounds()
-        if not bounds:
-            hide_all()
-            return
-
-        bx = float(bounds["X"])
-        by = float(bounds["Y"])
-        bw = float(bounds["Width"])
-        bh = float(bounds["Height"])
+        bx = bounds["X"]
+        by = bounds["Y"]
+        bw = bounds["Width"]
+        bh = bounds["Height"]
         sh = primary_screen_height()
         t = 6.0
 
@@ -210,22 +243,35 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
             bp.setFrame_display_(rect, True)
             bp.orderFront_(None)
 
-    AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.15, True, update_banner)
+    AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.12, True, update_banner)
+
+    def _point_inside_target(pt) -> bool:
+        b = state["bounds"]
+        if not b:
+            return False
+        return (
+            b["X"] <= pt.x <= b["X"] + b["Width"]
+            and b["Y"] <= pt.y <= b["Y"] + b["Height"]
+        )
 
     def event_callback(proxy, event_type, event, refcon):
-        # Allow ONLY AI-signed events
+        # 1. Always allow AI-signed events
         tag = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUserData)
         if tag == AI_MAGIC_TAG:
             return event
 
-        # If user is not focused on the target app, allow input so user can work or click to focus
-        if not is_target_frontmost():
+        # 2. If target is unset or not frontmost, never block anything
+        if not is_target_frontmost_fast():
             return event
 
-        # Target app is frontmost: Esc aborts; all other inputs are blocked
-        if event_type == Quartz.kCGEventKeyDown:
+        # 3. Keyboard events while target window is frontmost
+        if event_type in (Quartz.kCGEventKeyDown, Quartz.kCGEventKeyUp):
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
-            if keycode == 53:  # Esc
+            flags = Quartz.CGEventGetFlags(event)
+            # Allow Command+Tab so user can always switch apps via keyboard
+            if keycode == 48 and (flags & Quartz.kCGEventFlagMaskCommand):
+                return event
+            if event_type == Quartz.kCGEventKeyDown and keycode == 53:  # Esc
                 try:
                     abort_file.write_text("esc", encoding="utf-8")
                 except Exception:
@@ -233,13 +279,19 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
                 hide_all()
                 AppHelper.stopEventLoop()
                 return None
+            return None
+
+        # 4. Mouse click/drag/scroll events: ONLY block inside the target window bounds
+        pt = Quartz.CGEventGetLocation(event)
+        if not _point_inside_target(pt):
+            return event
 
         return None
 
+    # Note: kCGEventMouseMoved is intentionally excluded so cursor movement is never locked
     mask = (
         Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventKeyUp)
-        | Quartz.CGEventMaskBit(Quartz.kCGEventMouseMoved)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDown)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseUp)
         | Quartz.CGEventMaskBit(Quartz.kCGEventLeftMouseDragged)

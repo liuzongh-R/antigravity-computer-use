@@ -18,7 +18,7 @@ if str(HERE) not in sys.path:
 import guard as guard_mod  # noqa: E402
 
 SERVER_NAME = "antigravity-computer-use"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.2.1"
 GUARD_TIMEOUT = 45.0
 
 ABORT_MESSAGE = (
@@ -59,7 +59,7 @@ def _get_capture_libs():
     return _mss_mod, _pil_image_cls
 
 
-def _init_coord_space(max_width: int = 1280) -> dict[str, int]:
+def _init_coord_space(max_width: int = 1024) -> dict[str, int]:
     global _coord_space
     mss, _ = _get_capture_libs()
     with mss.mss() as sct:
@@ -112,7 +112,7 @@ def _ensure_guard_active(target: str = "") -> None:
 
 # --- Tool implementations ---
 
-def tool_take_screenshot(max_width: int = 1280, quality: int = 80) -> list[dict[str, Any]]:
+def tool_take_screenshot(max_width: int = 1024, quality: int = 75) -> list[dict[str, Any]]:
     global _coord_space
     mss, PILImage = _get_capture_libs()
     max_width = max(320, min(3840, int(max_width)))
@@ -237,7 +237,10 @@ def tool_press_keys(keys: Any) -> list[dict[str, Any]]:
     return [{"type": "text", "text": f"Pressed keys: {keys!r}"}]
 
 
-def tool_execute_actions(actions: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+def tool_execute_actions(
+    actions: list[dict[str, Any]],
+    release_after: bool = False,
+) -> tuple[list[dict[str, Any]], bool]:
     global _current_target
     inp = _get_input()
     results: list[dict[str, Any]] = []
@@ -300,7 +303,10 @@ def tool_execute_actions(actions: list[dict[str, Any]]) -> tuple[list[dict[str, 
         else:
             raise ValueError(f"Unknown action type: {kind!r}")
 
-    return [{"type": "text", "text": json.dumps({"success": True, "results": results}, ensure_ascii=False)}], False
+    if release_after:
+        guard_mod.stop_guard(quiet=True)
+
+    return [{"type": "text", "text": json.dumps({"success": True, "released": release_after, "results": results}, ensure_ascii=False)}], False
 
 
 def tool_release_control() -> list[dict[str, Any]]:
@@ -315,8 +321,8 @@ TOOLS_SPEC: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "max_width": {"type": "integer", "default": 1280, "description": "Max output width in pixels"},
-                "quality": {"type": "integer", "default": 80, "description": "JPEG quality (20-95)"},
+                "max_width": {"type": "integer", "default": 1024, "description": "Max output width in pixels"},
+                "quality": {"type": "integer", "default": 75, "description": "JPEG quality (20-95)"},
             },
         },
     },
@@ -425,6 +431,11 @@ TOOLS_SPEC: list[dict[str, Any]] = [
                     "items": {"type": "object"},
                     "description": "List of action objects with 'type' (click, double_click, right_click, move, drag, scroll, type, press, hotkey, wait, activate_window)",
                 },
+                "release_after": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, immediately release AI Guard lock once all actions succeed (saves an extra release_control turn).",
+                },
             },
             "required": ["actions"],
         },
@@ -468,13 +479,20 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> tuple[list[dict[str, Any]
             return [{"type": "text", "text": ABORT_MESSAGE}], True
         if name == "activate_window" and args.get("title_pattern"):
             _current_target = str(args["title_pattern"])
+        elif name == "execute_actions":
+            for act in args.get("actions") or []:
+                if isinstance(act, dict) and str(act.get("type") or act.get("action") or "").strip().lower() == "activate_window":
+                    tp = act.get("title_pattern") or act.get("title")
+                    if tp:
+                        _current_target = str(tp)
+                        break
         _ensure_guard_active(_current_target)
 
     try:
         if name == "take_screenshot":
             content = tool_take_screenshot(
-                max_width=args.get("max_width", 1280),
-                quality=args.get("quality", 80),
+                max_width=args.get("max_width", 1024),
+                quality=args.get("quality", 75),
             )
             is_err = False
         elif name == "activate_window":
@@ -518,7 +536,10 @@ def _dispatch_tool(name: str, args: dict[str, Any]) -> tuple[list[dict[str, Any]
             content = tool_press_keys(keys=args["keys"])
             is_err = False
         elif name == "execute_actions":
-            content, is_err = tool_execute_actions(actions=list(args.get("actions") or []))
+            content, is_err = tool_execute_actions(
+                actions=list(args.get("actions") or []),
+                release_after=bool(args.get("release_after", False)),
+            )
         else:
             content = [{"type": "text", "text": f"Unknown tool: {name}"}]
             is_err = True
