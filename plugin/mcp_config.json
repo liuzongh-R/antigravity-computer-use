@@ -3,20 +3,21 @@
     "computer-use-control": {
       "command": "__PYTHON_PATH__",
       "args": [
-        "__PROXY_PATH__",
-        "--backend",
-        "__BACKEND_PATH__"
+        "__SERVER_PATH__"
       ],
       "tools": {
         "take_screenshot": { "eager": true },
-        "take_screenshot_with_ocr": { "eager": true },
+        "get_screen_size": { "eager": true },
+        "list_windows": { "eager": true },
+        "activate_window": { "eager": true },
         "click_screen": { "eager": true },
+        "move_mouse": { "eager": true },
+        "drag_mouse": { "eager": true },
+        "scroll": { "eager": true },
         "type_text": { "eager": true },
         "press_keys": { "eager": true },
         "execute_actions": { "eager": true },
-        "list_windows": { "eager": true },
-        "activate_window": { "eager": true },
-        "get_screen_size": { "eager": true }
+        "release_control": { "eager": true }
       }
     }
   }

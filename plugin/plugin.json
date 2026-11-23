@@ -1,12 +1,12 @@
 {
   "name": "computer-use",
   "displayName": "Computer Use 桌面控制",
-  "description": "跨平台（Windows / macOS / Linux）桌面控制：截图、OCR、鼠标点击拖拽、键盘输入与窗口管理。基于开源 computer-control-mcp。",
-  "version": "0.1.1",
-  "repository": "https://github.com/AB498/computer-control-mcp",
+  "description": "极速跨平台（Windows / macOS）原生桌面控制与 Codex 风格全锁定守卫：1280px JPEG 内存截屏、自动坐标映射、中英文原生输入、魔数签名兼容远控全拦截与 Esc 即时退出。",
+  "version": "0.2.0",
+  "repository": "https://github.com/liuzongh-R/antigravity-computer-use",
   "suggestedPrompts": [
     "截一张屏幕截图，告诉我桌面上有哪些窗口",
-    "打开记事本并输入一行测试文字",
+    "打开记事本并输入一行中英文测试文字",
     "列出当前所有窗口并切换到浏览器"
   ]
 }

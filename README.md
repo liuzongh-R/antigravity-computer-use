@@ -1,83 +1,61 @@
 # Antigravity Computer Use
 
-适用于 **Antigravity** 的跨平台桌面控制插件（Windows / macOS），提供视觉截屏、OCR 识别、鼠标点击与拖拽、键盘输入、窗口切换等能力，并内置 **专属 `.venv` 极速直连启动 + 透明 MCP 代理 + Codex 风格 AI 操作守卫**（高对比提示卡片、蓝色细边框高亮、除 `Esc` 外全键鼠锁定、截图隐形与超时自动解锁）。
+适用于 **Antigravity** 的极速跨平台桌面控制插件（Windows / macOS · `v0.2.0`）。内置自研单进程 MCP 服务器（仅需 `mss` 与 `pillow` 两个基础依赖）、1280px JPEG 内存截屏与自动坐标映射，以及 **Codex 风格全锁定 AI 守卫**（顶部醒目提示卡片、蓝色细边框、兼容远控软件的魔数签名拦截、按 `Esc` 立即终止与 `release_control` 秒解）。
 
 ---
 
-## 核心特性对比（Windows vs macOS）
+## v0.2.0 核心特性
 
 | 能力维度 | Windows 版 | macOS 版 |
 | :--- | :--- | :--- |
-| **启动性能（v0.1.1）** | 专属 `.venv` 直连后端 + 进程内启停守卫，零联网 `uvx` 解析延迟 | 专属 `.venv` 直连后端与 `pyobjc` + 进程内启停守卫，零 `uv run` 延迟 |
-| **视觉与控制后端** | `computer-control-mcp`（支持 WGC 窗口截图、RapidOCR、键鼠与窗口管理） | `computer-control-mcp`（截图、RapidOCR、键鼠与窗口管理） |
-| **Codex 风格操作提示** | 屏幕顶部居中双行提示卡片 + 四边 6px 蓝色高亮边框（对 AI 截图隐形：`WDA_EXCLUDEFROMCAPTURE`） | **仅在被操作的目标窗口内部**显示双行提示卡片与四边 6px 蓝色细边框（对截图隐形：`NSWindowSharingNone`）；切到其他应用自动隐藏 |
-| **用户输入全锁定** | 64 位安全底层键鼠钩子（`WH_KEYBOARD_LL` / `WH_MOUSE_LL`），拦截全部物理鼠标移动/点击/滚轮与键盘输入，仅放行 AI 注入事件 | `CGEventTap` 拦截目标窗口内全部物理键鼠移动/点击/拖拽/滚轮/按键；切到其他软件时正常使用不拦截 |
-| **按 `Esc` 退出方式** | 全局按 `Esc` 立即写入中止标志并退出锁定 | 只有**点击并激活目标窗口**后按 `Esc` 才终止 AI 操作；在其他软件中按 `Esc` 不误触 |
-| **自动化兜底** | 20 秒无新动作心跳看门狗自动解除锁定 | 20 秒无新动作心跳看门狗自动解除锁定 |
-
----
-
-## 工作原理
-
-本插件通过一层轻量级的标准库 stdio MCP 代理（`mcp_proxy.py`）直连本地 `.venv` 中的 `computer-control-mcp`：
-
-1. **专属 `.venv` 极速直连**：安装阶段一次性创建 `~/.gemini/config/plugins/computer-use/.venv` 并装好全部依赖；运行期不再每次联网执行 `uvx @latest` 或 `uv run`，直接由虚拟环境进程启动。
-2. **进程内自动拉起守卫**：当智能体调用截屏（`take_screenshot` / `take_screenshot_with_ocr`）、点击、输入、快捷键或 `activate_window` 等工具时，代理在进程内直接启动对应系统的守卫（`guard_win.py` / `guard_mac.py`）并刷新 `heartbeat.txt` 心跳；`list_windows` / `get_screen_size` 等查询在守卫运行期间也会续期心跳，避免识图思考时误超时。
-3. **Codex 风格提示与输入全锁定**：守卫在屏幕上渲染鼠标穿透且对截图隐形的提示卡片（提示用户“请勿移动鼠标或操作键盘，当前除 Esc 外输入已锁定”）与蓝色高亮边框，并屏蔽除 `Esc` 外的全部物理键鼠输入。
-4. **Esc 硬拦截与瞬时退出**：用户按下 `Esc` 后，守卫立即写下 `abort.flag` 并解除全部键鼠锁定；代理在收到后续工具调用时直接拦截，返回 `ABORTED_BY_USER`（带 5 秒冷却期），无需消耗额外模型轮次即可中止任务。
-5. **看门狗超时自动解锁**：若超过 20 秒没有任何桌面工具心跳，守卫看门狗会自动退出并释放所有系统钩子。
+| **启动与运行速度** | 自研纯标准库单进程 MCP 服务，仅依赖 `mss` + `pillow`，冷启动 `< 0.5s` | 同左（外加 `pyobjc`），零外部代理与 ONNX 模型加载拖累 |
+| **截屏与坐标映射** | 内存直出 1280px 缩放 JPEG 图像，截图像素坐标自动精准映射虚拟桌面，免算 DPI 缩放 | 同左，自动适配 Retina 屏幕逻辑坐标，截图像素直接点击 |
+| **文字输入** | 原生 Unicode `SendInput`，中英文直接输入，完全无视系统输入法 | 原生 `CGEventKeyboardSetUnicodeString`，中英文直接输入 |
+| **Codex 风格操作提示** | 顶部居中双行提示卡片 + 四边 6px 蓝色高亮边框（**本机与 GameViewer 等远控均清晰可见**） | **仅在被操作的目标窗口内部**显示双行提示卡片与 6px 蓝色细边框；切走自动隐藏 |
+| **除 `Esc` 外全输入锁定** | 独立纯 Win32 `GetMessageW` 钩子线程，**仅放行带专属魔数 `0x41475943` 的 AI 事件**，物理及远控键鼠全部禁止 | `CGEventTap` 仅放行专属魔数 `0x41475943`；当目标窗口在前台时禁止除 `Esc` 外所有鼠标移动/点击/滚轮与按键 |
+| **按 `Esc` 退出与解锁** | 全局按 `Esc` 毫秒级卸载钩子并中止 AI；任务结束调用 `release_control` 秒解（45 秒心跳看门狗兜底） | 仅在**点击并激活目标窗口**后按 `Esc` 才终止 AI；在其他软件中正常使用；任务结束调用 `release_control` 秒解 |
 
 ---
 
 ## 快速安装
 
-你可以从 GitHub Releases 下载对应平台的独立压缩包（`antigravity-computer-use-windows.zip` 或 `antigravity-computer-use-macos.zip`），或克隆本仓库后运行安装脚本。
+### macOS 版安装（任选一种）
+
+1. **一行命令远程安装（最省事，终端任意目录直接粘贴）**：
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/liuzongh-R/antigravity-computer-use/main/install-remote.sh | bash
+   ```
+2. **下载压缩包在终端安装**：从 Releases 下载 `antigravity-computer-use-macos.zip` 并解压后，先 `cd` 进解压目录再运行：
+   ```bash
+   cd ~/Downloads/antigravity-computer-use-macos && bash ./install.sh
+   ```
+3. **直接双击安装**：解压 `antigravity-computer-use-macos.zip` 后，双击其中的 `install.command`（如系统提示未验证开发者，右键 → 打开即可）。
+
+**安装后必须开启系统权限**：
+前往「系统设置 → 隐私与安全性」，为 **Antigravity**（及安装用的终端）打开：
+- **屏幕录制（Screen Recording）**
+- **辅助功能（Accessibility）**
+授权完成后**彻底重启 Antigravity**。
 
 ### Windows 版安装
 
-1. 解压 `antigravity-computer-use-windows.zip`（需本机已安装 Python 3）。
-2. 在解压目录中打开终端（PowerShell），运行：
+1. 从 Releases 下载 `antigravity-computer-use-windows.zip` 并解压（需已安装 Python 3）。
+2. 进入解压目录 `antigravity-computer-use-windows`，运行：
    ```powershell
    powershell -ExecutionPolicy Bypass -File install.ps1
    ```
-3. 脚本会自动完成：`uv` 检查与安装 → 复制插件至 `%USERPROFILE%\.gemini\config\plugins\computer-use` → 创建专属 `.venv` 并安装 `computer-control-mcp` → 生成无 BOM UTF-8 的直连 `mcp_config.json` → 预热下载 OCR 模型。
-4. **重启 Antigravity 或新开一个对话**使插件生效。
-
-### macOS 版安装
-
-1. 解压 `antigravity-computer-use-macos.zip`（需本机已安装 Python 3）。
-2. 在终端进入解压目录并运行：
-   ```bash
-   bash install.sh
-   ```
-3. 脚本会自动完成：`uv` 检查与安装 → 复制插件至 `~/.gemini/config/plugins/computer-use` → 创建专属 `.venv` 并安装 `computer-control-mcp` 与 `pyobjc-framework-Cocoa` / `pyobjc-framework-Quartz` → 写入直连 `mcp_config.json` → 预热导入与 OCR 模型。
-4. **手动授予系统权限（必须）**：
-   打开「系统设置 → 隐私与安全性」，分别为 **Antigravity**（以及运行脚本使用的终端）开启以下两项权限：
-   - **屏幕录制（Screen Recording）**
-   - **辅助功能（Accessibility）**
-5. 授权完成后**彻底重启 Antigravity**。
+3. 脚本会自动安装 `uv`、建立插件专属 `.venv`（仅装 `mss` 与 `pillow`，数秒完成）并生成无 BOM UTF-8 的直连配置。
+4. **重启 Antigravity 或新开一个对话**即可使用。
 
 ---
 
 ## 日常使用与测试示例
 
-安装完成后，在新对话中直接给出桌面操作指令即可，例如：
+- `截一张屏幕截图，告诉我桌面上有哪些窗口`
+- `测试：打开记事本（macOS：TextEdit）并输入 Hello 测试中文输入`
+- `切换到微信窗口并查看最新消息`
 
-- `截一张屏幕截图，告诉我当前桌面上有哪些窗口`
-- `测试：打开记事本（macOS：TextEdit）并输入 Hello from Antigravity`
-- `切换到微信窗口并查看最新消息列表`
-
-> **提示**：为了提升速度与准确率，内置技能规则 [SKILL.md](plugin/skills/computer-use/SKILL.md) 引导智能体优先使用命令行与剪贴板粘贴（`Ctrl+V` / `Command+V`），将连续确定性动作合并为一次 `execute_actions`，仅在必要时运行本地 OCR。
-
----
-
-## 安全与 Esc 退出机制
-
-- **高危操作确认**：涉及删除文件、支付、发送消息/邮件、提交表单、修改系统设置或输入密码时，智能体会先向用户确认；遇到验证码（CAPTCHA）会自动停止。
-- **随时接管**：
-  - **Windows**：AI 操作期间屏幕四边会出现 6px 蓝色高亮边框与顶部提示卡片，除 `Esc` 外键鼠锁定，按 `Esc` 即可立即中止 AI 动作并恢复人工控制。
-  - **macOS**：提示卡片与蓝色边框仅跟随被操作的目标窗口；AI 操作该窗口期间你仍可切换到其他应用正常工作；如需中止 AI，先点击回到被操作的窗口使其处于前台，再按 `Esc`。
-- **自动兜底**：任何情况下只要超过 20 秒无新操作心跳，守卫均会自动退出。
+AI 开始截屏或操控时会自动弹出提示卡片并锁定键鼠；操作完成后会自动调用 `release_control` 秒解。期间如需随时接管，按 `Esc`（macOS 需点击回到被操作窗口再按 `Esc`）即可立即退出。
 
 ---
 
@@ -85,23 +63,27 @@
 
 ```text
 antigravity-computer-use/
-├── install.ps1                 # Windows 一键安装脚本（含专属 .venv 构建）
-├── install.sh                  # macOS / Linux 一键安装脚本（含专属 .venv 构建）
+├── install.ps1                 # Windows 一键安装脚本
+├── install.sh                  # macOS / Linux 一键安装脚本
+├── install.command             # macOS 双击启动安装包装脚本
+├── install-remote.sh           # macOS / Linux 一行远程安装脚本
 ├── LICENSE                     # MIT 开源协议
 ├── README.md                   # 项目说明文档
 ├── scripts/
-│   └── build_releases.py       # 构建双端独立发行压缩包（输出至 dist/）
+│   └── build_releases.py       # 构建双端带顶层目录的发行压缩包（输出至 dist/）
 └── plugin/                     # Antigravity 插件主体
     ├── plugin.json             # 插件元数据
-    ├── mcp_config.json         # MCP 服务器与预加载工具模板
+    ├── mcp_config.json         # MCP 直连配置模板
     ├── guard/
-    │   ├── mcp_proxy.py        # 透明 stdio MCP 代理（直连后端、进程内启停守卫与 Esc 硬拦截）
-    │   ├── guard.py            # 跨平台守卫管理模块与 CLI 入口
-    │   ├── guard_win.py        # Windows 端提示卡片、蓝框、截图隐形与 64 位底层键鼠钩子
-    │   └── guard_mac.py        # macOS 端目标窗口跟随提示、蓝框、截图隐形与 CGEventTap 拦截
+    │   ├── server.py           # 极速单进程原生 MCP 服务器（12 个工具 + 自动坐标映射）
+    │   ├── input_win.py        # Windows 原生 SendInput 与窗口控制（含魔数签名）
+    │   ├── input_mac.py        # macOS 原生 Quartz / AppKit 控制（含魔数签名）
+    │   ├── guard.py            # 跨平台守卫管理与 CLI
+    │   ├── guard_win.py        # Windows 独立钩子线程、全拦截与 Codex 风格提示
+    │   └── guard_mac.py        # macOS 目标窗口跟随提示、蓝框与 CGEventTap 拦截
     └── skills/
         └── computer-use/
-            └── SKILL.md        # 智能体桌面操作与提速规范
+            └── SKILL.md        # 智能体桌面操作规范
 ```
 
 ---
@@ -109,13 +91,12 @@ antigravity-computer-use/
 ## 排错与日志路径
 
 - **守卫运行日志**：`~/.gemini/antigravity/plugin_data/computer-use/guard.log`（Windows 正常启动后会记录 `hooks_installed kb=True ms=True`；macOS 会记录 `mac_event_tap_installed=True`）。
+- **Mac 报 `No such file or directory`**：请使用上方方式 1 的一行 `curl | bash` 命令，或确保已 `cd` 进入解压后的 `antigravity-computer-use-macos` 目录再执行 `bash ./install.sh`。
 - **Mac 截图黑屏 / 点击无反应 / `CGEventTapCreate` 失败**：请检查「系统设置 → 隐私与安全性」中的「屏幕录制」和「辅助功能」是否已勾选 Antigravity 与终端，勾选后必须重启 Antigravity。
-- **点击位置偏移**：通常由屏幕缩放（Windows 125%/150% 或 macOS Retina 2x）引起，可提示智能体先调用 `get_screen_size` 并对比截图分辨率进行校准。
-- **工具未加载**：请确认插件目录位于 `~/.gemini/config/plugins/computer-use`，并新开对话或重启 Antigravity。
+- **Windows 无法控制管理员窗口**：以管理员身份运行的程序界面需同权限或手动处理。
 
 ---
 
-## 致谢与开源协议
+## 开源协议
 
-- 底层桌面控制与 OCR 能力基于开源项目 [AB498/computer-control-mcp](https://github.com/AB498/computer-control-mcp)。
-- 本项目采用 [MIT License](LICENSE) 开源。
+本项目采用 [MIT License](LICENSE) 开源。

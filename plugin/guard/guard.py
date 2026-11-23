@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Cross-platform AI Computer-Use Guard (Windows & macOS).
+"""Cross-platform AI Computer-Use Guard (v0.2.0).
 
 Usage:
-  python guard.py start [--target "<app_or_window>"] [--timeout 20] [--uvx <path>]
+  python guard.py start [--target "<app_or_window>"] [--timeout 45]
   python guard.py stop
   python guard.py status
   python guard.py check-abort
@@ -24,6 +24,7 @@ from pathlib import Path
 STATE_DIR = Path.home() / ".gemini" / "antigravity" / "plugin_data" / "computer-use"
 PID_FILE = STATE_DIR / "guard.pid"
 ABORT_FILE = STATE_DIR / "abort.flag"
+STOP_FILE = STATE_DIR / "stop.flag"
 STATE_FILE = STATE_DIR / "guard_state.json"
 HEARTBEAT_FILE = STATE_DIR / "heartbeat.txt"
 LOG_FILE = STATE_DIR / "guard.log"
@@ -114,15 +115,23 @@ def _can_import_mac_deps() -> bool:
         return False
 
 
+def _pick_win_python() -> str:
+    exe = Path(sys.executable)
+    pw = exe.with_name("pythonw.exe")
+    if pw.is_file():
+        return str(pw)
+    return str(exe)
+
+
 def start_guard(
     target: str = "",
-    timeout: float = 20.0,
+    timeout: float = 45.0,
     uvx_hint: str = "",
     quiet: bool = False,
 ) -> int:
     ensure_state_dir()
-    if ABORT_FILE.exists():
-        ABORT_FILE.unlink()
+    ABORT_FILE.unlink(missing_ok=True)
+    STOP_FILE.unlink(missing_ok=True)
 
     system = platform.system()
     write_heartbeat()
@@ -142,7 +151,7 @@ def start_guard(
     if system == "Windows":
         worker = here / "guard_win.py"
         cmd = [
-            sys.executable,
+            _pick_win_python(),
             str(worker),
             "--state-dir",
             str(STATE_DIR),
@@ -187,9 +196,9 @@ def start_guard(
 
     kwargs = {}
     if system == "Windows":
-        DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = 0x08000000
         CREATE_NEW_PROCESS_GROUP = 0x00000200
-        kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        kwargs["creationflags"] = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
 
@@ -215,17 +224,23 @@ def stop_guard(quiet: bool = False) -> int:
         try:
             pid = int(PID_FILE.read_text(encoding="utf-8").strip())
             if is_pid_alive(pid):
-                if platform.system() == "Windows":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        capture_output=True,
-                        creationflags=0x08000000,
-                    )
-                else:
-                    os.kill(pid, signal.SIGTERM)
+                STOP_FILE.write_text("stop", encoding="utf-8")
+                deadline = time.time() + 0.35
+                while time.time() < deadline and is_pid_alive(pid):
+                    time.sleep(0.05)
+                if is_pid_alive(pid):
+                    if platform.system() == "Windows":
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            capture_output=True,
+                            creationflags=0x08000000,
+                        )
+                    else:
+                        os.kill(pid, signal.SIGTERM)
         except Exception:
             pass
         PID_FILE.unlink(missing_ok=True)
+    STOP_FILE.unlink(missing_ok=True)
     STATE_FILE.unlink(missing_ok=True)
     if not quiet:
         print("Guard stopped")
@@ -265,7 +280,7 @@ def main() -> int:
     sub = parser.add_subparsers(dest="action", required=True)
     p_start = sub.add_parser("start")
     p_start.add_argument("--target", default="")
-    p_start.add_argument("--timeout", type=float, default=20.0)
+    p_start.add_argument("--timeout", type=float, default=45.0)
     p_start.add_argument("--uvx", default="")
     sub.add_parser("stop")
     sub.add_parser("status")

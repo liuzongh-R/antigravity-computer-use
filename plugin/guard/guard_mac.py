@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""macOS AI Computer-Use Guard (v0.1.1):
+"""macOS AI Computer-Use Guard (v0.2.0):
 - Shows Codex-style floating banner & 6px blue border ONLY inside the target window
   when the target app is frontmost (hides when user switches away).
-- Excluded from screenshots via NSWindowSharingNone so AI sees clean UI.
+- Visible to both local screen & remote desktop viewers (no NSWindowSharingNone).
 - Uses primary screen height (screens()[0]) for CGWindowBounds -> Cocoa conversion.
-- Listens via CGEventTap (full mouse move/drag/click/wheel + keyboard):
-  * Allows AI-injected events (kCGEventSourceUnixProcessID > 0).
+- Listens via CGEventTap:
+  * Allows ONLY events signed with AI_MAGIC_TAG (kCGEventSourceUserData == 0x41475943).
   * When target app is NOT frontmost: allows user physical input (including
     clicking the target window to focus it).
   * When target app IS frontmost: pressing Esc aborts AI operation; all other
     physical keyboard/mouse events are blocked.
-- Heartbeat watchdog: auto-exits if no heartbeat within --timeout seconds.
+- 0.15s watchdog checks abort.flag, stop.flag, dynamic target & heartbeat timeout.
 """
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ import json
 from pathlib import Path
 import sys
 import time
+
+AI_MAGIC_TAG = 0x41475943  # 'AGYC'
 
 
 def run_guard(state_dir: Path, target: str, timeout: float) -> None:
@@ -34,6 +36,7 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
         sys.exit(1)
 
     abort_file = state_dir / "abort.flag"
+    stop_file = state_dir / "stop.flag"
     heartbeat_file = state_dir / "heartbeat.txt"
     state_file = state_dir / "guard_state.json"
 
@@ -94,16 +97,12 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
         p.setOpaque_(False)
         p.setBackgroundColor_(color)
         p.setIgnoresMouseEvents_(True)
-        try:
-            p.setSharingType_(AppKit.NSWindowSharingNone)
-        except Exception:
-            pass
         return p
 
     app = AppKit.NSApplication.sharedApplication()
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
 
-    banner_w, banner_h = 460.0, 56.0
+    banner_w, banner_h = 500.0, 58.0
     panel = _make_panel(
         banner_w,
         banner_h,
@@ -119,18 +118,18 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
 
     def _title_text(t: str) -> str:
         if t:
-            return f"🤖 AI 正在操控 [{t}]，请勿移动鼠标或操作键盘"
-        return "🤖 AI 正在操控此窗口，请勿移动鼠标或操作键盘"
+            return f"● AI 正在操控 [{t}] — 请勿移动鼠标或操作键盘"
+        return "● AI 正在操控此窗口 — 请勿移动鼠标或操作键盘"
 
     lbl_title = AppKit.NSTextField.labelWithString_(_title_text(current_target))
     lbl_title.setTextColor_(AppKit.NSColor.whiteColor())
-    lbl_title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(12.5))
+    lbl_title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(13))
     lbl_title.setAlignment_(AppKit.NSTextAlignmentCenter)
-    lbl_title.setFrame_(AppKit.NSMakeRect(10, 27, banner_w - 24, 20))
+    lbl_title.setFrame_(AppKit.NSMakeRect(10, 28, banner_w - 24, 20))
     inner.addSubview_(lbl_title)
 
     lbl_sub = AppKit.NSTextField.labelWithString_(
-        "当前窗口输入已锁定 · 点击此页按 Esc 立即退出 AI 操作"
+        "当前窗口输入已禁止 · 点击此页按 Esc 立即退出 AI 操作"
     )
     lbl_sub.setTextColor_(
         AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.99, 0.83, 0.30, 1.0)
@@ -140,7 +139,7 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
     lbl_sub.setFrame_(AppKit.NSMakeRect(10, 6, banner_w - 24, 18))
     inner.addSubview_(lbl_sub)
 
-    border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.80)
+    border_color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(0.23, 0.51, 0.96, 0.88)
     border_panels = [_make_panel(10, 6, border_color) for _ in range(4)]
 
     def hide_all() -> None:
@@ -152,7 +151,7 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
 
     def update_banner(_timer) -> None:
         nonlocal last_hb, current_target
-        if abort_file.exists():
+        if abort_file.exists() or stop_file.exists():
             hide_all()
             AppHelper.stopEventLoop()
             return
@@ -211,16 +210,19 @@ def run_guard(state_dir: Path, target: str, timeout: float) -> None:
             bp.setFrame_display_(rect, True)
             bp.orderFront_(None)
 
-    AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.2, True, update_banner)
+    AppKit.NSTimer.scheduledTimerWithTimeInterval_repeats_block_(0.15, True, update_banner)
 
     def event_callback(proxy, event_type, event, refcon):
-        src_pid = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUnixProcessID)
-        if src_pid > 0:
+        # Allow ONLY AI-signed events
+        tag = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUserData)
+        if tag == AI_MAGIC_TAG:
             return event
 
+        # If user is not focused on the target app, allow input so user can work or click to focus
         if not is_target_frontmost():
             return event
 
+        # Target app is frontmost: Esc aborts; all other inputs are blocked
         if event_type == Quartz.kCGEventKeyDown:
             keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
             if keycode == 53:  # Esc
@@ -278,7 +280,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--target", default="")
-    parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--timeout", type=float, default=45.0)
     args = parser.parse_args()
     run_guard(Path(args.state_dir), args.target, args.timeout)
 

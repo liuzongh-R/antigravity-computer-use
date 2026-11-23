@@ -1,10 +1,10 @@
-﻿# Computer Use 插件一键安装（Windows, v0.1.1）
+﻿# Computer Use 插件一键安装（Windows, v0.2.0）
 # 用法：右键 -> 使用 PowerShell 运行；或  powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = "Stop"
 $src = Join-Path $PSScriptRoot "plugin"
 $dest = Join-Path $env:USERPROFILE ".gemini\config\plugins\computer-use"
 
-Write-Host "[1/5] 检查 Python 与 uv ..."
+Write-Host "[1/4] 检查 Python 与 uv ..."
 $pyExe = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $pyExe -and (Get-Command py -ErrorAction SilentlyContinue)) {
     $pyExe = (& py -3 -c "import sys; print(sys.executable)" 2>$null)
@@ -36,38 +36,43 @@ if (-not $uv) {
 if (-not $uv) { throw "安装 uv 后仍找不到 uv.exe" }
 Write-Host "    uv: $uv"
 
-Write-Host "[2/5] 复制插件到 $dest ..."
+Write-Host "[2/4] 复制插件到 $dest ..."
 New-Item -ItemType Directory -Force $dest | Out-Null
+# Clean stale scripts if upgrading from v0.1.x
+Remove-Item "$dest\guard\mcp_proxy.py" -ErrorAction SilentlyContinue
 Copy-Item "$src\*" $dest -Recurse -Force
 
-Write-Host "[3/5] 创建插件专属 .venv 并安装 computer-control-mcp ..."
+Write-Host "[3/4] 准备插件专属 .venv 并安装轻量依赖 (mss, pillow) ..."
 $venvDir = Join-Path $dest ".venv"
 $venvPy = Join-Path $venvDir "Scripts\python.exe"
-$backendExe = Join-Path $venvDir "Scripts\computer-control-mcp.exe"
-& $uv venv $venvDir --python $pyExe --clear
-if ($LASTEXITCODE -ne 0) { throw "创建 .venv 失败" }
-& $uv pip install --python $venvPy computer-control-mcp
-if ($LASTEXITCODE -ne 0) { throw "安装 computer-control-mcp 失败" }
-if (-not (Test-Path $backendExe)) { throw "未找到后端可执行文件: $backendExe" }
+$serverPy = Join-Path $dest "guard\server.py"
+$needVenv = $true
+if (Test-Path $venvPy) {
+    try {
+        & $venvPy -c "import sys; print(sys.executable)" 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $needVenv = $false }
+    } catch {}
+}
+if ($needVenv) {
+    & $uv venv $venvDir --python $pyExe --clear
+    if ($LASTEXITCODE -ne 0) { throw "创建 .venv 失败（如正在运行旧版 Antigravity，请先关闭后重试）" }
+}
+& $uv pip install --python $venvPy mss pillow
+if ($LASTEXITCODE -ne 0) { throw "安装依赖 (mss, pillow) 失败" }
 
-Write-Host "[4/5] 写入直连配置（无 BOM UTF-8）..."
+Write-Host "[4/4] 写入直连配置（无 BOM UTF-8）并校验 ..."
 $cfgPath = Join-Path $dest "mcp_config.json"
-$proxyPath = Join-Path $dest "guard\mcp_proxy.py"
 $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $cfg.mcpServers.'computer-use-control'.command = $venvPy
 $cfg.mcpServers.'computer-use-control'.args = @(
     $cfg.mcpServers.'computer-use-control'.args | ForEach-Object {
-        if ($_ -eq "__PROXY_PATH__") { $proxyPath }
-        elseif ($_ -eq "__BACKEND_PATH__") { $backendExe }
-        else { $_ }
+        if ($_ -eq "__SERVER_PATH__") { $serverPy } else { $_ }
     }
 )
 $json = $cfg | ConvertTo-Json -Depth 10
 [System.IO.File]::WriteAllText($cfgPath, $json + "`n", [System.Text.UTF8Encoding]::new($false))
-
-Write-Host "[5/5] 预热 OCR 模型（首次约需几分钟）..."
-& $venvPy -c "import computer_control_mcp; print('依赖与 OCR 模型就绪')"
-if ($LASTEXITCODE -ne 0) { throw "预热导入 computer_control_mcp 失败" }
+& $venvPy -c "import mss, PIL; print('原生后端依赖就绪')"
+if ($LASTEXITCODE -ne 0) { throw "验证依赖导入失败" }
 
 Write-Host ""
-Write-Host "安装完成（v0.1.1 直连模式）。请重启 Antigravity，或新开一个对话，然后说：'测试：打开记事本输入 Hello'。"
+Write-Host "安装完成（v0.2.0 极速原生版）。请重启 Antigravity，或新开一个对话测试桌面操控。"

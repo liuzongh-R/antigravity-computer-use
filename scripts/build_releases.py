@@ -11,6 +11,7 @@ DIST = ROOT / "dist"
 PLUGIN_DIR = ROOT / "plugin"
 
 COMMON_DOCS = ["README.md", "LICENSE"]
+EXEC_SUFFIXES = {".py", ".sh", ".command"}
 
 
 def _is_ignored(path: Path) -> bool:
@@ -26,33 +27,39 @@ def _is_ignored(path: Path) -> bool:
 
 def _add_file_to_zip(zf: zipfile.ZipFile, src: Path, arcname: str, mode: int = 0o644) -> None:
     data = src.read_bytes()
-    if src.suffix == ".sh":
+    if src.suffix in {".sh", ".command"}:
         data = data.replace(b"\r\n", b"\n")
     zi = zipfile.ZipInfo(arcname)
-    zi.create_system = 3  # Unix permissions compatible across tools
+    zi.create_system = 3
     zi.compress_type = zipfile.ZIP_DEFLATED
     zi.external_attr = ((0o100000 | mode) & 0xFFFF) << 16
     zf.writestr(zi, data)
 
 
-def build_zip(out_name: str, installer_name: str, excluded_file: str) -> Path:
+def build_zip(
+    out_name: str,
+    top_dir: str,
+    root_scripts: list[str],
+    excluded_files: set[str],
+) -> Path:
     out_path = DIST / out_name
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        inst_src = ROOT / installer_name
-        inst_mode = 0o755 if installer_name.endswith(".sh") else 0o644
-        _add_file_to_zip(zf, inst_src, installer_name, mode=inst_mode)
+        for script_name in root_scripts:
+            src = ROOT / script_name
+            mode = 0o755 if src.suffix in {".sh", ".command"} else 0o644
+            _add_file_to_zip(zf, src, f"{top_dir}/{script_name}", mode=mode)
 
         for doc in COMMON_DOCS:
-            _add_file_to_zip(zf, ROOT / doc, doc, mode=0o644)
+            _add_file_to_zip(zf, ROOT / doc, f"{top_dir}/{doc}", mode=0o644)
 
         for file_path in sorted(PLUGIN_DIR.rglob("*")):
             if not file_path.is_file() or _is_ignored(file_path):
                 continue
-            if file_path.name == excluded_file:
+            if file_path.name in excluded_files:
                 continue
             rel = file_path.relative_to(ROOT).as_posix()
-            file_mode = 0o755 if file_path.suffix in {".py", ".sh"} else 0o644
-            _add_file_to_zip(zf, file_path, rel, mode=file_mode)
+            file_mode = 0o755 if file_path.suffix in EXEC_SUFFIXES else 0o644
+            _add_file_to_zip(zf, file_path, f"{top_dir}/{rel}", mode=file_mode)
 
     return out_path
 
@@ -64,13 +71,15 @@ def main() -> int:
 
     win_zip = build_zip(
         "antigravity-computer-use-windows.zip",
-        installer_name="install.ps1",
-        excluded_file="guard_mac.py",
+        top_dir="antigravity-computer-use-windows",
+        root_scripts=["install.ps1"],
+        excluded_files={"guard_mac.py", "input_mac.py"},
     )
     mac_zip = build_zip(
         "antigravity-computer-use-macos.zip",
-        installer_name="install.sh",
-        excluded_file="guard_win.py",
+        top_dir="antigravity-computer-use-macos",
+        root_scripts=["install.sh", "install.command"],
+        excluded_files={"guard_win.py", "input_win.py"},
     )
 
     print(f"Built Windows release: {win_zip}")
